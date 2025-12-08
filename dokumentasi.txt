@@ -1,0 +1,3573 @@
+# 📚 DOKUMENTASI SISTEM AUTENTIKASI & AUTORISASI - BooGSG
+
+## 📖 Daftar Isi
+1. [Sistem Autentikasi & Verifikasi](#sistem-autentikasi--verifikasi)
+2. [Sistem Autorisasi & Kontrol Akses](#sistem-autorisasi--kontrol-akses)
+3. [Validasi Data](#validasi-data)
+4. [Schema Database & Model](#schema-database--model)
+5. [Business Logic & Workflow](#business-logic--workflow)
+6. [Fitur Keamanan](#fitur-keamanan)
+7. [Environment & Konfigurasi](#environment--konfigurasi)
+8. [Konstanta & Status Code](#konstanta--status-code)
+9. [Flow Diagram](#flow-diagram)
+10. [Checklist Deployment](#checklist-deployment)
+
+---
+
+# 1. SISTEM AUTENTIKASI & VERIFIKASI
+
+## 🔐 Mekanisme Login
+
+### A. Proses Login Lengkap
+
+**File yang Terlibat:**
+- `routes/web.php` - Route login
+- `app/Http/Controllers/AuthController.php` - Logic login
+- `resources/views/auth/login.blade.php` - Form login
+- `app/Models/User.php` - Model user
+
+### B. Step-by-Step Alur Login
+
+```
+1. USER BUKA HALAMAN LOGIN
+   ↓
+   Browser: GET /login
+   ↓
+   AuthController::showLogin()
+   ↓
+   View: resources/views/auth/login.blade.php
+   
+2. USER INPUT EMAIL & PASSWORD
+   ↓
+   Form: <input type="email" name="email">
+        <input type="password" name="password">
+   
+3. USER KLIK TOMBOL LOGIN
+   ↓
+   Browser: POST /login
+   ↓
+   
+4. CONTROLLER VERIFIKASI CREDENTIAL
+   ↓
+   Route (web.php):
+   Route::post('/login', [AuthController::class, 'login'])->name('login');
+   
+   Controller (AuthController.php):
+   public function login(Request $request) {
+       $request->validate([
+           'email' => 'required|email',
+           'password' => 'required'
+       ]);
+       
+       // Cari user berdasarkan email
+       $user = User::where('email', $request->email)->first();
+       
+       // Cek password menggunakan Hash::check()
+       if (!$user || !Hash::check($request->password, $user->password)) {
+           return back()->with('error', 'Email atau password salah');
+       }
+   }
+   
+5. PASSWORD VALIDATION (BCRYPT)
+   ↓
+   Penjelasan:
+   - Password user input: "password123"
+   - Password di database (hashed): "$2y$12$abcd...xyz"
+   - Fungsi Hash::check():
+     * Ambil password input: "password123"
+     * Hash lagi dengan salt yang sama: "$2y$12$..."
+     * Bandingkan dengan password di DB
+     * Jika cocok → login sukses ✅
+     * Jika tidak → login gagal ❌
+   
+6. CREATE SESSION
+   ↓
+   $request->session()->put('user_id', $user->id);
+   $request->session()->put('user_email', $user->email);
+   $request->session()->put('user_role', $user->role);
+   
+   File Session:
+   storage/framework/sessions/
+   Session ID tersimpan di cookie: LARAVEL_SESSION=xxxxx
+   
+7. REDIRECT KE DASHBOARD
+   ↓
+   if ($user->role === 'A') {
+       return redirect()->route('admin.dashboard');
+   } else {
+       return redirect()->route('dashboard');
+   }
+```
+
+### C. Implementasi di Project
+
+**File: `routes/web.php`**
+```php
+// Route login - untuk guest (belum login)
+Route::middleware('guest')->group(function () {
+    Route::get('/login', [AuthController::class, 'showLogin'])->name('auth.login.form');
+    Route::post('/login', [AuthController::class, 'login'])->name('login');
+});
+```
+
+**File: `app/Http/Controllers/AuthController.php`**
+```php
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\User;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Hash;
+
+class AuthController extends Controller
+{
+    // Tampilkan form login
+    public function showLogin()
+    {
+        return view('auth.login', ['title' => 'Login']);
+    }
+
+    // Proses login
+    public function login(Request $request)
+    {
+        // Validasi input
+        $validated = $request->validate([
+            'email' => 'required|email',
+            'password' => 'required|min:6'
+        ]);
+
+        // Cari user berdasarkan email
+        $user = User::where('email', $request->email)->first();
+
+        // Cek apakah user ada & password benar
+        if (!$user || !Hash::check($request->password, $user->password)) {
+            return back()
+                ->withInput($request->only('email'))
+                ->with('error', 'Email atau password salah');
+        }
+
+        // Simpan session
+        $request->session()->regenerate();
+        session(['user_id' => $user->id]);
+        session(['user_email' => $user->email]);
+        session(['user_role' => $user->role]);
+
+        // Redirect sesuai role
+        if ($user->role === 'A') {
+            return redirect()->route('admin.dashboard')
+                ->with('success', 'Login sebagai Admin berhasil');
+        } else {
+            return redirect()->route('dashboard')
+                ->with('success', 'Login berhasil');
+        }
+    }
+}
+```
+
+**File: `resources/views/auth/login.blade.php`**
+```blade
+@extends('layouts.app')
+
+@section('content')
+<div class="max-w-md mx-auto mt-10 bg-white p-8 rounded shadow">
+    <h2 class="text-2xl font-bold mb-6">Login</h2>
+
+    @if ($errors->any())
+        <div class="bg-red-100 text-red-700 p-3 rounded mb-4">
+            <ul>
+                @foreach ($errors->all() as $error)
+                    <li>• {{ $error }}</li>
+                @endforeach
+            </ul>
+        </div>
+    @endif
+
+    <form method="POST" action="{{ route('login') }}">
+        @csrf
+
+        <!-- Email Input -->
+        <div class="mb-4">
+            <label class="block text-gray-700 font-bold mb-2">Email</label>
+            <input type="email" name="email" value="{{ old('email') }}"
+                   class="w-full px-3 py-2 border rounded @error('email') border-red-500 @enderror"
+                   required>
+            @error('email')
+                <p class="text-red-500 text-sm mt-1">{{ $message }}</p>
+            @enderror
+        </div>
+
+        <!-- Password Input -->
+        <div class="mb-4">
+            <label class="block text-gray-700 font-bold mb-2">Password</label>
+            <input type="password" name="password"
+                   class="w-full px-3 py-2 border rounded @error('password') border-red-500 @enderror"
+                   required>
+            @error('password')
+                <p class="text-red-500 text-sm mt-1">{{ $message }}</p>
+            @enderror
+        </div>
+
+        <!-- Submit Button -->
+        <button type="submit" class="w-full bg-blue-600 text-white py-2 rounded hover:bg-blue-700">
+            Login
+        </button>
+    </form>
+
+    <p class="text-center mt-4 text-gray-600">
+        Belum punya akun? <a href="{{ route('register') }}" class="text-blue-600">Daftar di sini</a>
+    </p>
+</div>
+@endsection
+```
+
+---
+
+## 🔑 Password Hashing dengan BCrypt
+
+### A. Cara Kerja BCrypt
+
+**Apa itu BCrypt?**
+- Algoritma hashing password yang aman
+- Tidak bisa di-reverse (one-way encryption)
+- Menggunakan "salt" untuk keamanan tambahan
+- Adaptive: semakin lama waktu hashing, semakin aman
+
+**Contoh:**
+```
+Password asli:    "password123"
+Password hashed:  "$2y$12$R9h/cIPz0gi.URNNGNXOM.OPST9/PgBkqquzi.Ss7KIUgO2t0jVm2"
+
+BCrypt format: $2y$[cost]$[salt][hash]
+               $2y$ = BCrypt algorithm
+               $12  = Cost (berapa kali proses hashing)
+               $....$.... = Salt + Hash gabungan
+```
+
+### B. Implementasi di Project
+
+**Saat Register (Hashing Password):**
+
+File: `app/Http/Controllers/AuthController.php`
+```php
+public function register(Request $request)
+{
+    $validated = $request->validate([
+        'name' => 'required|string|max:255',
+        'email' => 'required|email|unique:users',
+        'password' => 'required|min:6|confirmed'
+    ]);
+
+    // HASHING PASSWORD
+    $user = User::create([
+        'name' => $validated['name'],
+        'email' => $validated['email'],
+        'password' => Hash::make($validated['password']),  // ← HASH PASSWORD
+        'role' => 'U',  // Default role: User
+        'email_verified_at' => now()
+    ]);
+
+    return redirect()->route('login')
+        ->with('success', 'Registrasi berhasil, silakan login');
+}
+```
+
+**Penjelasan:**
+- `Hash::make($password)` → mengubah password biasa menjadi hash BCrypt
+- Hasil hash tidak bisa di-reverse (satu arah)
+- Setiap kali di-hash, hasilnya berbeda (karena salt berbeda)
+
+**Saat Login (Verifikasi Password):**
+
+```php
+public function login(Request $request)
+{
+    $user = User::where('email', $request->email)->first();
+
+    // VERIFIKASI PASSWORD
+    if (!Hash::check($request->password, $user->password)) {
+        return back()->with('error', 'Password salah');
+    }
+    
+    // Password cocok → login sukses
+}
+```
+
+**Penjelasan:**
+- `Hash::check($input, $hashed)` → bandingkan password input dengan hash di DB
+- Jika cocok → return true
+- Jika tidak → return false
+
+### C. Database User Table
+
+**File: `database/migrations/xxxx_create_users_table.php`**
+```php
+Schema::create('users', function (Blueprint $table) {
+    $table->uuid('id')->primary();
+    $table->string('name');
+    $table->string('email')->unique();
+    $table->timestamp('email_verified_at')->nullable();
+    $table->string('password');  // ← Password hashed disimpan di sini
+    $table->enum('role', ['A', 'U'])->default('U');  // Admin atau User
+    $table->string('phone')->nullable();
+    $table->string('profile_photo_url')->nullable();
+    $table->timestamps();
+});
+```
+
+---
+
+## 📧 Email Verification
+
+### A. Status Email Verification
+
+**Current Status:** ⚠️ Exists but not fully implemented
+
+**Apa yang ada:**
+- Field `email_verified_at` di table users ✅
+- Seeder sudah set `email_verified_at = now()` ✅
+- Form validasi email sudah ada ✅
+
+**Apa yang belum:**
+- ❌ Email konfirmasi tidak dikirim
+- ❌ Tidak ada route verifikasi email
+- ❌ Tidak ada check di middleware
+
+### B. Cara Implementasi Email Verification (OPTIONAL)
+
+Jika ingin implementasi full:
+
+**Step 1: Buat Mail Class**
+```bash
+php artisan make:mail VerifyEmailMail
+```
+
+**Step 2: Setup di User Model**
+```php
+use Illuminate\Contracts\Auth\MustVerifyEmail;
+
+class User extends Model implements MustVerifyEmail
+{
+    // ...
+}
+```
+
+**Step 3: Buat Route Verification**
+```php
+Route::get('/email/verify/{id}/{hash}', function (Request $request) {
+    $user = User::find($request->route('id'));
+    
+    if ($user->email_verified_at !== null) {
+        return redirect()->route('dashboard');
+    }
+    
+    $user->update(['email_verified_at' => now()]);
+    
+    return redirect()->route('dashboard')
+        ->with('success', 'Email verified successfully!');
+});
+```
+
+---
+
+## 🔄 Session Management
+
+### A. Cara Kerja Session
+
+**File yang Terlibat:**
+- `config/session.php` - Konfigurasi session
+- `storage/framework/sessions/` - Tempat session disimpan
+- Cookie browser - LARAVEL_SESSION
+
+**Alur:**
+
+```
+1. USER LOGIN
+   ↓
+   Session dibuat di server: storage/framework/sessions/xyz123
+   Session berisi: user_id, user_email, user_role, csrf_token
+   ↓
+   Session ID (xyz123) dikirim ke browser via cookie: LARAVEL_SESSION=xyz123
+   
+2. USER BUKA HALAMAN LAIN
+   ↓
+   Browser kirim cookie: LARAVEL_SESSION=xyz123
+   ↓
+   Server baca session file: storage/framework/sessions/xyz123
+   ↓
+   Server ambil data: user_id, user_email, user_role
+   ↓
+   User authenticated ✅
+   
+3. USER LOGOUT
+   ↓
+   Session file dihapus: storage/framework/sessions/xyz123
+   ↓
+   Cookie dihapus di browser
+   ↓
+   User tidak authenticated ❌
+```
+
+### B. Implementasi di Project
+
+**File: `routes/web.php`**
+```php
+// Protected route - hanya untuk user yang sudah login
+Route::middleware('auth')->group(function () {
+    Route::get('/dashboard', function () {
+        // session('user_id') sudah tersedia
+        return view('dashboard');
+    })->name('dashboard');
+});
+
+// Logout
+Route::post('/logout', [AuthController::class, 'logout'])->name('logout');
+```
+
+**File: `app/Http/Controllers/AuthController.php`**
+```php
+public function logout(Request $request)
+{
+    // Hapus semua session
+    $request->session()->flush();
+    
+    // Regenerate CSRF token untuk keamanan
+    $request->session()->regenerateToken();
+    
+    return redirect()->route('home')
+        ->with('success', 'Logout berhasil');
+}
+```
+
+**File: `resources/views/layouts/navbar.blade.php`**
+```blade
+@auth
+    <!-- User sudah login -->
+    <span>Halo, {{ auth()->user()->name }}</span>
+    
+    <!-- Logout form -->
+    <form method="POST" action="{{ route('logout') }}" style="display:inline;">
+        @csrf
+        <button type="submit" onclick="return confirm('Yakin mau logout?')">
+            Logout
+        </button>
+    </form>
+@else
+    <!-- User belum login -->
+    <a href="{{ route('login') }}">Login</a>
+    <a href="{{ route('register') }}">Daftar</a>
+@endauth
+```
+
+---
+
+### C. Tempat Session Disimpan
+
+**Default:** File-based (`storage/framework/sessions/`)
+
+Konfigurasi:
+**File: `.env`**
+```
+SESSION_DRIVER=file
+SESSION_LIFETIME=120  # Session timeout 120 menit
+```
+
+Jika menggunakan database:
+```
+SESSION_DRIVER=database
+
+# Maka perlu table sessions di database:
+php artisan session:table
+php artisan migrate
+```
+
+---
+
+## 🛡️ CSRF Tokens
+
+### A. Apa itu CSRF?
+
+**CSRF = Cross-Site Request Forgery**
+
+Contoh serangan:
+```
+1. User login di website: https://boogsgunila.com
+2. User buka website jahat: https://websitejahat.com
+3. Website jahat mengirim request ke boogsgunila.com
+   (misal: DELETE booking, transfer uang, dll)
+4. Request berhasil karena session user masih aktif
+5. User kehilangan data/uang ❌
+```
+
+**Cara Cegah dengan CSRF Token:**
+```
+1. User login → server buat token unik (misal: xyz123)
+2. Token disimpan di session
+3. Setiap form POST/PUT/DELETE harus include token
+4. Website jahat tidak tahu token → request ditolak ✅
+```
+
+### B. Implementasi di Project
+
+**Di Blade Template:**
+```blade
+<form method="POST" action="{{ route('booking.store') }}">
+    @csrf  <!-- ← CSRF Token otomatis ditambahkan -->
+    
+    <input type="text" name="event_name" required>
+    <input type="date" name="date" required>
+    <button type="submit">Simpan</button>
+</form>
+```
+
+Output HTML:
+```html
+<form method="POST" action="/booking">
+    <input type="hidden" name="_token" value="abc123xyz...">
+    
+    <input type="text" name="event_name" required>
+    <input type="date" name="date" required>
+    <button type="submit">Simpan</button>
+</form>
+```
+
+**Di Controller (Validasi CSRF):**
+```php
+public function store(Request $request)
+{
+    // Middleware 'web' sudah validasi CSRF token
+    // Jika token tidak valid → 419 error
+    
+    $validated = $request->validate([
+        'event_name' => 'required|string'
+    ]);
+}
+```
+
+**File: `app/Http/Middleware/VerifyCsrfToken.php`**
+```php
+protected $except = [
+    // Route mana yang TIDAK perlu CSRF token
+    // Contoh: webhook dari pihak ketiga
+];
+```
+
+---
+
+# 2. SISTEM AUTORISASI & KONTROL AKSES
+
+## 👥 Role System (Admin vs User)
+
+### A. Definisi Role
+
+**Role ada 2 tipe:**
+
+| Role | Code | Izin |
+|------|------|------|
+| **Admin** | `'A'` | ✅ Manage semua booking, verifikasi pembayaran, manage user, manage gedung/fasilitas |
+| **User** | `'U'` | ✅ Buat booking sendiri, lihat booking sendiri, lihat pembayaran, ❌ tidak bisa lihat booking orang lain |
+
+### B. Menyimpan Role di Database
+
+**File: `database/migrations/xxxx_create_users_table.php`**
+```php
+Schema::create('users', function (Blueprint $table) {
+    // ...
+    $table->enum('role', ['A', 'U'])->default('U');
+    // ...
+});
+```
+
+**File: `database/seeders/AdminUserSeeder.php`**
+```php
+class AdminUserSeeder extends Seeder
+{
+    public function run()
+    {
+        // User 1: Admin
+        User::create([
+            'name' => 'Administrator',
+            'email' => 'admin@gsg.unila.ac.id',
+            'password' => Hash::make('password'),
+            'role' => 'A',  // ← ADMIN ROLE
+            'email_verified_at' => now()
+        ]);
+
+        // User 2: Regular User
+        User::create([
+            'name' => 'Rizky',
+            'email' => 'rizky@example.com',
+            'password' => Hash::make('password'),
+            'role' => 'U',  // ← USER ROLE
+            'email_verified_at' => now()
+        ]);
+    }
+}
+```
+
+---
+
+### C. Custom Middleware CheckRole
+
+**File: `app/Http/Middleware/CheckRole.php`**
+```php
+<?php
+
+namespace App\Http\Middleware;
+
+use Closure;
+use Illuminate\Http\Request;
+
+class CheckRole
+{
+    public function handle(Request $request, Closure $next, $role)
+    {
+        // Cek apakah user sudah login
+        if (!auth()->check()) {
+            return redirect()->route('login');
+        }
+
+        // Cek apakah user memiliki role yang diizinkan
+        if (auth()->user()->role !== $role) {
+            abort(403, 'Anda tidak memiliki akses ke halaman ini');
+        }
+
+        return $next($request);
+    }
+}
+```
+
+**Daftarkan di: `app/Http/Kernel.php`**
+```php
+protected $routeMiddleware = [
+    // ...
+    'role' => \App\Http\Middleware\CheckRole::class,
+];
+```
+
+---
+
+### D. Implementasi di Routes
+
+**File: `routes/web.php`**
+```php
+// PUBLIC ROUTES (untuk semua orang)
+Route::get('/', [HomeController::class, 'index'])->name('home');
+Route::get('/sewa/gedung', function () {
+    return view('sewa.gedung');
+})->name('public.sewa.gedung');
+
+// PROTECTED ROUTES (hanya untuk user yang login)
+Route::middleware('auth')->group(function () {
+    // User dashboard
+    Route::get('/dashboard', [UserController::class, 'dashboard'])->name('dashboard');
+    
+    // Booking routes (untuk user)
+    Route::get('/booking', [BookingController::class, 'index'])->name('booking.index');
+    Route::get('/booking/create', [BookingController::class, 'create'])->name('booking.create');
+    Route::post('/booking', [BookingController::class, 'store'])->name('booking.store');
+});
+
+// ADMIN ROUTES (hanya untuk role 'A')
+Route::prefix('admin')->name('admin.')->middleware(['auth', 'role:A'])->group(function () {
+    // Admin dashboard
+    Route::get('/', [AdminController::class, 'index'])->name('dashboard');
+    
+    // Jadwal management
+    Route::get('/schedules', [AdminController::class, 'schedulesIndex'])
+        ->name('schedules.index');
+    Route::get('/booking/create', [AdminController::class, 'bookingCreate'])
+        ->name('booking.create');
+    Route::post('/booking', [AdminController::class, 'bookingStore'])
+        ->name('booking.store');
+    
+    // Payment verification
+    Route::get('/payments', [AdminController::class, 'paymentsIndex'])
+        ->name('payments.index');
+});
+
+// GUEST ROUTES (hanya untuk yang belum login)
+Route::middleware('guest')->group(function () {
+    Route::get('/login', [AuthController::class, 'showLogin'])->name('auth.login.form');
+    Route::post('/login', [AuthController::class, 'login'])->name('login');
+    Route::get('/register', [AuthController::class, 'showRegister'])->name('auth.register.form');
+    Route::post('/register', [AuthController::class, 'register'])->name('register');
+});
+```
+
+**Penjelasan:**
+- `Route::middleware('auth')` - Hanya user yang login
+- `Route::middleware(['auth', 'role:A'])` - Hanya user login dengan role 'A'
+- `Route::middleware('guest')` - Hanya yang belum login
+
+---
+
+### E. Authorization Check di Controller
+
+**File: `app/Http/Controllers/BookingController.php`**
+```php
+class BookingController extends Controller
+{
+    public function index()
+    {
+        // Cek apakah user adalah admin
+        if (auth()->user()->role === 'A') {
+            // Admin bisa lihat semua booking
+            $bookings = Booking::all();
+        } else {
+            // User hanya bisa lihat booking miliknya sendiri
+            $bookings = Booking::where('user_id', auth()->id())->get();
+        }
+
+        return view('booking.index', compact('bookings'));
+    }
+
+    public function edit($id)
+    {
+        $booking = Booking::find($id);
+
+        // Cek: apakah booking milik user ini?
+        if (auth()->user()->role !== 'A' && $booking->user_id !== auth()->id()) {
+            abort(403, 'Anda tidak bisa edit booking orang lain');
+        }
+
+        return view('booking.edit', compact('booking'));
+    }
+
+    public function update(Request $request, $id)
+    {
+        $booking = Booking::find($id);
+
+        // Authorization check
+        if (auth()->user()->role !== 'A' && $booking->user_id !== auth()->id()) {
+            return back()->with('error', 'Unauthorized');
+        }
+
+        // Update booking
+        $booking->update($request->validated());
+
+        return redirect()->route('booking.index')
+            ->with('success', 'Booking updated');
+    }
+}
+```
+
+---
+
+### F. Authorization Check di Blade Template
+
+**File: `resources/views/booking/index.blade.php`**
+```blade
+@forelse($bookings as $booking)
+    <tr>
+        <td>{{ $booking->event_name }}</td>
+        <td>{{ $booking->date }}</td>
+        <td>
+            @if(auth()->user()->role === 'A' || auth()->id() === $booking->user_id)
+                <!-- Admin atau pemilik booking bisa edit -->
+                <a href="{{ route('booking.edit', $booking->id) }}">Edit</a>
+                <a href="{{ route('booking.delete', $booking->id) }}">Hapus</a>
+            @endif
+        </td>
+    </tr>
+@empty
+    <tr>
+        <td colspan="3">Tidak ada booking</td>
+    </tr>
+@endforelse
+```
+
+---
+
+### G. Using Auth Helper Functions
+
+**Fungsi-fungsi yang tersedia:**
+
+```php
+// Di Controller atau Blade:
+
+// 1. Cek user sudah login?
+if (auth()->check()) {
+    echo "User sudah login";
+}
+
+// 2. Ambil user yang login
+$user = auth()->user();
+echo $user->name;
+echo $user->email;
+echo $user->role;
+
+// 3. Ambil user ID
+$userId = auth()->id();
+
+// 4. Cek role
+if (auth()->user()->role === 'A') {
+    echo "Admin";
+}
+
+// 5. Cek user belum login?
+if (auth()->guest()) {
+    echo "User belum login";
+}
+
+// 6. Redirect ke login jika tidak auth
+if (!auth()->check()) {
+    return redirect()->route('login');
+}
+```
+
+---
+
+# 3. VALIDASI DATA
+
+## ✅ Validasi Booking
+
+### A. File yang Terlibat
+
+- `app/Http/Controllers/BookingController.php` - Server-side validation
+- `resources/views/create_booking.blade.php` - Client-side validation
+- `app/Rules/NoScheduleConflict.php` - Custom rule untuk cek jadwal bentrok
+
+### B. Server-Side Validation (Backend)
+
+**File: `app/Http/Controllers/BookingController.php`**
+```php
+public function store(Request $request)
+{
+    // Validasi input
+    $validated = $request->validate([
+        // Event details
+        'event_name' => 'required|string|max:255',
+        'user_id' => 'required|exists:users,id',
+
+        // Date & Time
+        'date' => 'required|date|after:today',
+        'start_time' => 'required|date_format:H:i',
+        'end_time' => 'required|date_format:H:i|after:start_time',
+
+        // Gedung & Kapasitas
+        'gedung_id' => 'required|exists:gedung,id',
+        'capacity' => 'required|integer|min:1',
+
+        // Contact
+        'phone' => 'required|regex:/^([0-9]|\+62)[0-9]{9,13}$/',
+        'email' => 'required|email',
+
+        // Fasilitas (optional)
+        'fasilitas.*.id' => 'required_with:fasilitas.*.jumlah|exists:fasilitas,id',
+        'fasilitas.*.jumlah' => 'required_with:fasilitas.*.id|integer|min:1',
+
+        // File
+        'proposal_file' => 'nullable|file|mimes:pdf,doc,docx|max:5120',
+    ]);
+
+    // Cek jadwal bentrok
+    $conflictExists = Booking::where('gedung_id', $validated['gedung_id'])
+        ->where('date', $validated['date'])
+        ->where('status', '2')  // Hanya cek booking yang approved
+        ->where(function ($query) use ($validated) {
+            // Cek waktu bentrok
+            $query->whereBetween('start_time', [$validated['start_time'], $validated['end_time']])
+                  ->orWhereBetween('end_time', [$validated['start_time'], $validated['end_time']]);
+        })
+        ->exists();
+
+    if ($conflictExists) {
+        return back()->with('error', 'Jadwal sudah digunakan pada waktu tersebut');
+    }
+
+    // Cek kapasitas tidak melebihi kapasitas gedung
+    $gedung = Gedung::find($validated['gedung_id']);
+    if ($validated['capacity'] > $gedung->kapasitas) {
+        return back()->with('error', 'Kapasitas melebihi kapasitas gedung');
+    }
+
+    // Create booking
+    $booking = Booking::create($validated);
+
+    return redirect()->route('booking.index')
+        ->with('success', 'Booking berhasil dibuat');
+}
+```
+
+**Penjelasan Validasi Rules:**
+
+| Rule | Arti |
+|------|------|
+| `required` | Field wajib diisi |
+| `string` | Harus string/text |
+| `max:255` | Maksimal 255 karakter |
+| `date` | Format tanggal valid (YYYY-MM-DD) |
+| `after:today` | Tanggal harus lebih dari hari ini |
+| `date_format:H:i` | Format jam HH:MM |
+| `after:start_time` | Jam selesai > jam mulai |
+| `exists:users,id` | User ID harus ada di table users |
+| `regex:/pattern/` | Cocok dengan regex pattern |
+| `file` | Harus file |
+| `mimes:pdf,doc` | File type harus PDF atau DOC |
+| `max:5120` | File size max 5MB (5120 KB) |
+| `required_with:field` | Wajib jika field lain ada |
+
+---
+
+### C. Client-Side Validation (Frontend)
+
+**File: `resources/views/create_booking.blade.php`**
+```blade
+<form id="bookingForm" method="POST" action="{{ route('booking.store') }}"
+      onsubmit="return validateForm()">
+    @csrf
+
+    <!-- Event Name -->
+    <div class="form-group">
+        <label>Nama Event</label>
+        <input type="text" name="event_name" id="eventName"
+               value="{{ old('event_name') }}"
+               maxlength="255" required>
+        @error('event_name')
+            <span class="error">{{ $message }}</span>
+        @enderror
+    </div>
+
+    <!-- Date -->
+    <div class="form-group">
+        <label>Tanggal</label>
+        <input type="date" name="date" id="date"
+               value="{{ old('date') }}"
+               min="{{ date('Y-m-d', strtotime('+1 day')) }}"
+               required>
+        <small id="dateError" class="error" style="display:none;"></small>
+        @error('date')
+            <span class="error">{{ $message }}</span>
+        @enderror
+    </div>
+
+    <!-- Start Time -->
+    <div class="form-group">
+        <label>Jam Mulai</label>
+        <input type="time" name="start_time" id="startTime"
+               value="{{ old('start_time') }}"
+               required>
+        @error('start_time')
+            <span class="error">{{ $message }}</span>
+        @enderror
+    </div>
+
+    <!-- End Time -->
+    <div class="form-group">
+        <label>Jam Selesai</label>
+        <input type="time" name="end_time" id="endTime"
+               value="{{ old('end_time') }}"
+               required>
+        <small id="timeError" class="error" style="display:none;"></small>
+        @error('end_time')
+            <span class="error">{{ $message }}</span>
+        @enderror
+    </div>
+
+    <!-- Gedung -->
+    <div class="form-group">
+        <label>Gedung</label>
+        <select name="gedung_id" id="gedungId" required>
+            <option value="">Pilih Gedung</option>
+            @foreach($gedungs as $g)
+                <option value="{{ $g->id }}" {{ old('gedung_id') == $g->id ? 'selected' : '' }}>
+                    {{ $g->nama }} (Rp {{ number_format($g->harga) }})
+                </option>
+            @endforeach
+        </select>
+        @error('gedung_id')
+            <span class="error">{{ $message }}</span>
+        @enderror
+    </div>
+
+    <!-- Capacity -->
+    <div class="form-group">
+        <label>Kapasitas Peserta</label>
+        <input type="number" name="capacity" id="capacity"
+               value="{{ old('capacity') }}"
+               min="1" required>
+        <small id="capacityError" class="error" style="display:none;"></small>
+        @error('capacity')
+            <span class="error">{{ $message }}</span>
+        @enderror
+    </div>
+
+    <!-- Phone -->
+    <div class="form-group">
+        <label>Telepon</label>
+        <input type="text" name="phone" id="phone"
+               value="{{ old('phone') }}"
+               placeholder="08xxxxxxxxx atau +62xxxxxxxxx"
+               required>
+        <small id="phoneError" class="error" style="display:none;"></small>
+        @error('phone')
+            <span class="error">{{ $message }}</span>
+        @enderror
+    </div>
+
+    <!-- Fasilitas -->
+    <div class="form-group">
+        <label>Fasilitas Tambahan</label>
+        @foreach($fasilitas as $f)
+            <div class="facility-item">
+                <label>
+                    <input type="checkbox" name="fasilitas[{{ $loop->index }}][id]"
+                           value="{{ $f->id }}"
+                           data-harga="{{ $f->harga }}"
+                           onchange="recalcTotal()">
+                    {{ $f->nama }} - Rp {{ number_format($f->harga) }}
+                </label>
+                <input type="number" name="fasilitas[{{ $loop->index }}][jumlah]"
+                       value="1" min="1"
+                       onchange="recalcTotal()"
+                       style="display:none; width:60px;">
+            </div>
+        @endforeach
+    </div>
+
+    <!-- Biaya Summary -->
+    <div class="cost-summary">
+        <h3>Ringkasan Biaya</h3>
+        <p>Gedung: <span id="gedungPrice">Rp 0</span></p>
+        <p>Fasilitas: <span id="fasilitasPrice">Rp 0</span></p>
+        <p class="total">Total: <span id="totalPrice">Rp 0</span></p>
+    </div>
+
+    <button type="submit" class="btn-primary">Pesan Sekarang</button>
+</form>
+
+<script>
+function validateForm() {
+    let isValid = true;
+
+    // Validasi jam
+    const startTime = document.getElementById('startTime').value;
+    const endTime = document.getElementById('endTime').value;
+    
+    if (startTime >= endTime) {
+        document.getElementById('timeError').textContent = 'Jam selesai harus lebih besar dari jam mulai';
+        document.getElementById('timeError').style.display = 'block';
+        isValid = false;
+    }
+
+    // Validasi phone
+    const phone = document.getElementById('phone').value;
+    const phoneRegex = /^([0-9]|\+62)[0-9]{9,13}$/;
+    
+    if (!phoneRegex.test(phone)) {
+        document.getElementById('phoneError').textContent = 'Format telepon tidak valid';
+        document.getElementById('phoneError').style.display = 'block';
+        isValid = false;
+    }
+
+    // Validasi kapasitas
+    const gedungId = document.getElementById('gedungId').value;
+    const capacity = parseInt(document.getElementById('capacity').value);
+    
+    // Cek ke server jika kapasitas valid
+    // (ini lebih baik di-handle di server saja)
+
+    return isValid;
+}
+
+function recalcTotal() {
+    // Hitung total biaya (sudah dijelaskan sebelumnya)
+}
+</script>
+```
+
+---
+
+### D. Custom Validation Rule
+
+**File: `app/Rules/NoScheduleConflict.php`**
+```php
+<?php
+
+namespace App\Rules;
+
+use Illuminate\Contracts\Validation\Rule;
+use App\Models\Booking;
+
+class NoScheduleConflict implements Rule
+{
+    protected $gedungId;
+    protected $date;
+    protected $startTime;
+    protected $endTime;
+
+    public function __construct($gedungId, $date, $startTime, $endTime)
+    {
+        $this->gedungId = $gedungId;
+        $this->date = $date;
+        $this->startTime = $startTime;
+        $this->endTime = $endTime;
+    }
+
+    public function passes($attribute, $value)
+    {
+        $conflict = Booking::where('gedung_id', $this->gedungId)
+            ->where('date', $this->date)
+            ->where('status', '2')  // Hanya approved bookings
+            ->where(function ($query) {
+                $query->whereBetween('start_time', [$this->startTime, $this->endTime])
+                      ->orWhereBetween('end_time', [$this->startTime, $this->endTime]);
+            })
+            ->exists();
+
+        return !$conflict;
+    }
+
+    public function message()
+    {
+        return 'Jadwal sudah digunakan pada waktu tersebut untuk gedung ini';
+    }
+}
+```
+
+**Penggunaan di Controller:**
+```php
+$validated = $request->validate([
+    'date' => 'required|date',
+    'start_time' => [
+        'required',
+        new NoScheduleConflict(
+            $request->gedung_id,
+            $request->date,
+            $request->start_time,
+            $request->end_time
+        )
+    ]
+]);
+```
+
+---
+
+## ✅ Validasi Payment
+
+**File: `app/Http/Controllers/PaymentController.php`**
+```php
+public function uploadProof(Request $request, $id)
+{
+    $payment = Payment::find($id);
+
+    // Validasi
+    $validated = $request->validate([
+        'method' => 'required|in:cash,transfer,ewallet',
+        'amount' => 'required|numeric|min:100000',
+        'proof_file' => 'required_if:method,transfer,ewallet|file|mimes:jpg,png,pdf|max:5120',
+    ]);
+
+    // Jika method transfer/ewallet, wajib upload file
+    if (in_array($validated['method'], ['transfer', 'ewallet'])) {
+        if (!$request->hasFile('proof_file')) {
+            return back()->with('error', 'Bukti pembayaran wajib untuk metode ini');
+        }
+
+        $file = $request->file('proof_file');
+        $filename = time() . '_' . $file->getClientOriginalName();
+        $path = $file->storeAs('payments', $filename, 'public');
+
+        $payment->update([
+            'proof_file' => $path,
+            'method' => $validated['method'],
+            'status' => 1  // Proses (menunggu verifikasi)
+        ]);
+    } else {
+        // Cash payment
+        $payment->update([
+            'method' => 'cash',
+            'status' => 1  // Proses
+        ]);
+    }
+
+    return redirect()->route('payments.index')
+        ->with('success', 'Bukti pembayaran berhasil diupload');
+}
+```
+
+---
+
+# 4. SCHEMA DATABASE & MODEL
+
+## 📊 Database Architecture
+
+### A. Entity Relationship Diagram (ERD)
+
+```
+┌─────────────┐         ┌──────────────┐         ┌─────────────┐
+│    USERS    │         │   BOOKINGS   │         │   GEDUNG    │
+├─────────────┤         ├──────────────┤         ├─────────────┤
+│ id (PK)     │◄─┐   ┌──│ id (PK)      │──┐      │ id (PK)     │
+│ name        │  └───┤  │ user_id (FK) │  └─────│ nama        │
+│ email       │      │  │ gedung_id(FK)│        │ lokasi      │
+│ password    │      │  │ date         │        │ kapasitas   │
+│ role (A/U)  │      │  │ start_time   │        │ harga       │
+│ phone       │      │  │ end_time     │        │             │
+└─────────────┘      │  │ status (1-4) │        └─────────────┘
+                     │  │ event_name   │
+                     │  │ capacity     │
+                     │  │ phone        │
+                     │  │ email        │
+                     │  │ proposal_file│
+                     │  └──────────────┘
+                     │         │
+                     │         │ 1:N
+                     │         │
+                     │  ┌──────────────────────┐
+                     │  │ BOOKING_FASILITAS    │
+                     │  ├──────────────────────┤
+                     │  │ id (PK)              │
+                     │  │ booking_id (FK)      │
+                     │  │ fasilitas_id (FK)    │
+                     │  │ jumlah               │
+                     │  └──────────────────────┘
+                     │             │
+                     │             │ N:1
+                     │             │
+                     │  ┌──────────────────────┐
+                     │  │    FASILITAS         │
+                     │  ├──────────────────────┤
+                     │  │ id (PK)              │
+                     │  │ nama                 │
+                     │  │ harga                │
+                     │  │ deskripsi            │
+                     │  │ stock                │
+                     │  └──────────────────────┘
+                     │
+                     │  ┌──────────────────────┐
+                     └──│    PAYMENTS          │
+                        ├──────────────────────┤
+                        │ id (PK)              │
+                        │ booking_id (FK)      │
+                        │ amount               │
+                        │ status (0-3)         │
+                        │ method               │
+                        │ proof_file           │
+                        │ created_at           │
+                        └──────────────────────┘
+```
+
+### B. Table Details
+
+#### **Table: users**
+```sql
+CREATE TABLE users (
+    id UUID PRIMARY KEY,
+    name VARCHAR(255) NOT NULL,
+    email VARCHAR(255) UNIQUE NOT NULL,
+    email_verified_at TIMESTAMP NULL,
+    password VARCHAR(255) NOT NULL,
+    role ENUM('A', 'U') DEFAULT 'U',  -- Admin atau User
+    phone VARCHAR(20) NULL,
+    profile_photo_url VARCHAR(255) NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+
+-- Indexes
+CREATE INDEX idx_users_email ON users(email);
+CREATE INDEX idx_users_role ON users(role);
+```
+
+**Penjelasan Kolom:**
+- `id` - UUID unik
+- `role` - 'A' = Admin, 'U' = User
+- `email_verified_at` - NULL jika belum verifikasi, waktu jika sudah
+- `password` - Password hashed dengan BCrypt
+
+---
+
+#### **Table: bookings**
+```sql
+CREATE TABLE bookings (
+    id UUID PRIMARY KEY,
+    user_id UUID NOT NULL REFERENCES users(id),
+    gedung_id UUID NOT NULL REFERENCES gedung(id),
+    date DATE NOT NULL,
+    start_time TIME NOT NULL,
+    end_time TIME NOT NULL,
+    status CHAR(1) DEFAULT '1',  -- 1=Menunggu, 2=Disetujui, 3=Ditolak, 4=Selesai
+    event_name VARCHAR(255) NOT NULL,
+    capacity INT NOT NULL,  -- Jumlah peserta
+    phone VARCHAR(20) NOT NULL,
+    email VARCHAR(255) NOT NULL,
+    proposal_file VARCHAR(255) NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+
+-- Indexes
+CREATE INDEX idx_bookings_user_id ON bookings(user_id);
+CREATE INDEX idx_bookings_gedung_id ON bookings(gedung_id);
+CREATE INDEX idx_bookings_date ON bookings(date);
+CREATE INDEX idx_bookings_status ON bookings(status);
+```
+
+**Penjelasan Kolom:**
+- `date` - Tanggal booking (YYYY-MM-DD)
+- `start_time` - Jam mulai (HH:MM:SS)
+- `end_time` - Jam selesai (HH:MM:SS)
+- `status` - Kondisi booking (1/2/3/4)
+- `capacity` - Jumlah peserta yang akan hadir
+
+---
+
+#### **Table: gedung**
+```sql
+CREATE TABLE gedung (
+    id UUID PRIMARY KEY,
+    nama VARCHAR(255) NOT NULL,
+    lokasi VARCHAR(255) NULL,
+    kapasitas INT NOT NULL,
+    harga DECIMAL(12, 2) NOT NULL,  -- Harga per hari/jam
+    deskripsi TEXT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+
+-- Indexes
+CREATE INDEX idx_gedung_nama ON gedung(nama);
+```
+
+---
+
+#### **Table: fasilitas**
+```sql
+CREATE TABLE fasilitas (
+    id UUID PRIMARY KEY,
+    nama VARCHAR(255) NOT NULL,
+    harga DECIMAL(12, 2) NOT NULL,  -- Harga per item
+    deskripsi TEXT NULL,
+    stock INT DEFAULT 1,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+
+-- Indexes
+CREATE INDEX idx_fasilitas_nama ON fasilitas(nama);
+```
+
+---
+
+#### **Table: booking_fasilitas (Pivot Table)**
+```sql
+CREATE TABLE booking_fasilitas (
+    id UUID PRIMARY KEY,
+    booking_id UUID NOT NULL REFERENCES bookings(id) ON DELETE CASCADE,
+    fasilitas_id UUID NOT NULL REFERENCES fasilitas(id),
+    jumlah INT NOT NULL DEFAULT 1,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Indexes
+CREATE INDEX idx_booking_fasilitas_booking ON booking_fasilitas(booking_id);
+CREATE INDEX idx_booking_fasilitas_fasilitas ON booking_fasilitas(fasilitas_id);
+```
+
+**Penjelasan:**
+- Pivot table menghubungkan booking dengan fasilitas
+- Satu booking bisa punya banyak fasilitas
+- Satu fasilitas bisa dipakai di banyak booking
+- Kolom `jumlah` untuk qty fasilitas yang dipakai
+
+---
+
+#### **Table: payments**
+```sql
+CREATE TABLE payments (
+    id UUID PRIMARY KEY,
+    booking_id UUID NOT NULL REFERENCES bookings(id) ON DELETE CASCADE,
+    amount DECIMAL(12, 2) NOT NULL,
+    status INT DEFAULT 0,  -- 0=Belum, 1=Proses, 2=Verified, 3=Rejected
+    method VARCHAR(50) NULL,  -- cash, transfer, ewallet
+    proof_file VARCHAR(255) NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+
+-- Indexes
+CREATE INDEX idx_payments_booking ON payments(booking_id);
+CREATE INDEX idx_payments_status ON payments(status);
+```
+
+---
+
+### C. Models dengan Relations
+
+**File: `app/Models/User.php`**
+```php
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Foundation\Auth\User as Authenticatable;
+
+class User extends Authenticatable
+{
+    protected $keyType = 'string';
+    public $incrementing = false;
+
+    protected $fillable = [
+        'id', 'name', 'email', 'password', 'role', 'phone', 'profile_photo_url'
+    ];
+
+    // Relasi: satu user bisa punya banyak bookings
+    public function bookings()
+    {
+        return $this->hasMany(Booking::class);
+    }
+}
+```
+
+**File: `app/Models/Booking.php`**
+```php
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Booking extends Model
+{
+    protected $keyType = 'string';
+    public $incrementing = false;
+
+    protected $fillable = [
+        'id', 'user_id', 'gedung_id', 'date', 'start_time', 'end_time',
+        'status', 'event_name', 'capacity', 'phone', 'email', 'proposal_file'
+    ];
+
+    // Relasi: booking milik satu user
+    public function user()
+    {
+        return $this->belongsTo(User::class);
+    }
+
+    // Relasi: booking untuk satu gedung
+    public function gedung()
+    {
+        return $this->belongsTo(Gedung::class);
+    }
+
+    // Relasi: booking punya banyak fasilitas
+    public function bookingFasilitas()
+    {
+        return $this->hasMany(BookingFasilitas::class);
+    }
+
+    // Relasi: booking punya satu payment
+    public function payment()
+    {
+        return $this->hasOne(Payment::class);
+    }
+}
+```
+
+**File: `app/Models/Gedung.php`**
+```php
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Gedung extends Model
+{
+    protected $table = 'gedung';
+    protected $keyType = 'string';
+    public $incrementing = false;
+
+    protected $fillable = [
+        'id', 'nama', 'lokasi', 'kapasitas', 'harga', 'deskripsi'
+    ];
+
+    // Relasi: gedung punya banyak bookings
+    public function bookings()
+    {
+        return $this->hasMany(Booking::class);
+    }
+}
+```
+
+**File: `app/Models/Fasilitas.php`**
+```php
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Fasilitas extends Model
+{
+    protected $keyType = 'string';
+    public $incrementing = false;
+
+    protected $fillable = [
+        'id', 'nama', 'harga', 'deskripsi', 'stock'
+    ];
+
+    // Relasi: fasilitas punya banyak booking_fasilitas
+    public function bookingFasilitas()
+    {
+        return $this->hasMany(BookingFasilitas::class);
+    }
+}
+```
+
+**File: `app/Models/BookingFasilitas.php`**
+```php
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class BookingFasilitas extends Model
+{
+    protected $table = 'booking_fasilitas';
+    protected $keyType = 'string';
+    public $incrementing = false;
+
+    protected $fillable = [
+        'id', 'booking_id', 'fasilitas_id', 'jumlah'
+    ];
+
+    // Relasi: booking_fasilitas milik satu booking
+    public function booking()
+    {
+        return $this->belongsTo(Booking::class);
+    }
+
+    // Relasi: booking_fasilitas mereferensi satu fasilitas
+    public function fasilitas()
+    {
+        return $this->belongsTo(Fasilitas::class);
+    }
+}
+```
+
+**File: `app/Models/Payment.php`**
+```php
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Payment extends Model
+{
+    protected $keyType = 'string';
+    public $incrementing = false;
+
+    protected $fillable = [
+        'id', 'booking_id', 'amount', 'status', 'method', 'proof_file'
+    ];
+
+    // Relasi: payment untuk satu booking
+    public function booking()
+    {
+        return $this->belongsTo(Booking::class);
+    }
+}
+```
+
+---
+
+# 5. BUSINESS LOGIC & WORKFLOW
+
+## 📋 Alur Booking Lengkap
+
+### Step 1: User Buat Booking
+
+```
+User buka halaman: GET /booking/create
+    ↓
+View: resources/views/create_booking.blade.php
+    ↓
+User isi form:
+  - Event name
+  - Tanggal (harus besok atau lebih)
+  - Jam mulai & selesai
+  - Gedung
+  - Kapasitas peserta
+  - Fasilitas tambahan (optional)
+  - Kontak & email
+  ↓
+User klik tombol "Pesan Sekarang"
+    ↓
+Browser: POST /booking
+    ↓
+Middleware 'auth' cek user sudah login
+    ↓
+Jika tidak → redirect ke login
+Jika ya → lanjut ke controller
+```
+
+### Step 2: Server Validasi Input
+
+```
+BookingController::store() dijalankan
+    ↓
+Validasi input di controller:
+  ✓ event_name - harus diisi
+  ✓ date - harus lebih dari hari ini
+  ✓ start_time & end_time - format HH:MM, end > start
+  ✓ gedung_id - harus ada di table gedung
+  ✓ capacity - harus integer, tidak melebihi kapasitas gedung
+  ✓ phone - format valid (0xxx atau +62xxx)
+  ✓ fasilitas - jika ada, jumlah > 0
+  ✓ proposal_file - optional, tapi jika ada: PDF/DOC, max 5MB
+    ↓
+Validasi jadwal bentrok:
+  Cek: Pada tanggal & waktu tersebut, gedung sudah diboking & disetujui?
+  SELECT FROM bookings WHERE
+    gedung_id = X AND
+    date = Y AND
+    status = 2 (approved) AND
+    (
+      (start_time <= X AND end_time >= X) OR
+      (start_time <= Y AND end_time >= Y)
+    )
+    ↓
+Jika ada bentrok → return error: "Jadwal sudah digunakan"
+Jika tidak → lanjut
+    ↓
+Jika ada error validasi:
+  return back()->withErrors($errors)
+  ↓
+  View form ditampilkan kembali dengan error messages
+  User bisa lihat error di setiap field
+```
+
+### Step 3: Simpan Booking ke Database
+
+```
+Jika semua validasi pass → create booking:
+    ↓
+$booking = Booking::create([
+    'user_id' => auth()->id(),
+    'gedung_id' => $request->gedung_id,
+    'date' => $request->date,
+    'start_time' => $request->start_time,
+    'end_time' => $request->end_time,
+    'status' => '1',  // ← Default: Menunggu (pending)
+    'event_name' => $request->event_name,
+    'capacity' => $request->capacity,
+    'phone' => $request->phone,
+    'email' => $request->email,
+    'proposal_file' => $proposalPath ?? null
+]);
+    ↓
+Simpan fasilitas yang dipilih:
+    ↓
+foreach ($request->fasilitas as $fac) {
+    BookingFasilitas::create([
+        'booking_id' => $booking->id,
+        'fasilitas_id' => $fac['id'],
+        'jumlah' => $fac['jumlah']
+    ]);
+}
+    ↓
+Buat record payment otomatis:
+    ↓
+$payment = Payment::create([
+    'booking_id' => $booking->id,
+    'amount' => $totalAmount,  // Dihitung dari gedung + fasilitas
+    'status' => 0,  // Belum dibayar
+    'method' => null,
+    'proof_file' => null
+]);
+    ↓
+Redirect ke payment upload form:
+    ↓
+return redirect()->route('payments.upload.form', $payment->id)
+    ->with('success', 'Booking berhasil dibuat. Silakan upload bukti pembayaran.');
+```
+
+### Step 4: User Upload Bukti Pembayaran
+
+```
+User lihat form upload:
+    ↓
+GET /payments/{id}/upload
+    ↓
+View: resources/views/payments/upload.blade.php
+    ↓
+Form menampilkan:
+  - Pilihan metode pembayaran (3 opsi):
+    1. Bayar di Tempat (cash) - tidak perlu upload
+    2. Transfer Bank - wajib upload bukti
+    3. E-Wallet - wajib upload bukti
+  - File upload dengan drag-drop
+  - Total pembayaran
+  - Informasi penting
+    ↓
+User pilih metode & upload file (jika diperlukan)
+    ↓
+Browser: POST /payments/{id}/upload-proof
+    ↓
+Server validasi file:
+  ✓ Jika method = transfer/ewallet:
+      - File wajib ada
+      - File type: JPG, PNG, PDF
+      - File size: max 5MB
+  ✓ Jika method = cash:
+      - File optional
+    ↓
+File disimpan di: storage/app/public/payments/
+    ↓
+Update payment record:
+    ↓
+$payment->update([
+    'method' => $request->method,
+    'status' => 1,  // ← Status jadi "Proses" (menunggu verifikasi)
+    'proof_file' => $path,
+    'updated_at' => now()
+]);
+    ↓
+Redirect ke payment list:
+    ↓
+return redirect()->route('payments.index')
+    ->with('success', 'Bukti pembayaran berhasil diupload. Menunggu verifikasi admin');
+```
+
+### Step 5: Admin Verifikasi Pembayaran
+
+```
+Admin buka halaman: GET /admin/payments
+    ↓
+View: resources/views/admin/payments.blade.php
+    ↓
+Admin lihat list pembayaran dengan status:
+  - Belum Dibayar (0)
+  - Proses (1) ← User sudah upload, menunggu verifikasi
+  - Terverifikasi (2)
+  - Ditolak (3)
+    ↓
+Admin klik tombol "Verifikasi Pembayaran" untuk payment status 1
+    ↓
+Browser: POST /admin/payments/{id}/verify
+    ↓
+AdminController::verifyPayment() dijalankan:
+    ↓
+$payment = Payment::find($id);
+
+// Cek apakah payment sudah verified sebelumnya
+if ($payment->status !== 1) {
+    return back()->with('error', 'Payment sudah diverifikasi sebelumnya');
+}
+
+// Update payment status
+$payment->update([
+    'status' => 2,  // ← Status jadi "Terverifikasi"
+    'verified_at' => now()
+]);
+
+// Auto-approve booking jika payment verified
+$payment->booking->update([
+    'status' => 2  // ← Booking jadi "Disetujui"
+]);
+    ↓
+Redirect dengan success message:
+    ↓
+return redirect()->route('admin.payments.index')
+    ->with('success', 'Pembayaran berhasil diverifikasi. Booking disetujui.');
+    ↓
+User lihat status berubah:
+  - Payment: Terverifikasi ✅
+  - Booking: Disetujui ✅
+```
+
+### Step 6: Admin Kelola Booking
+
+```
+Admin buka jadwal:# 📚 DOKUMENTASI SISTEM AUTENTIKASI & AUTORISASI - BooGSG
+
+## 📖 Daftar Isi
+1. [Sistem Autentikasi & Verifikasi](#sistem-autentikasi--verifikasi)
+2. [Sistem Autorisasi & Kontrol Akses](#sistem-autorisasi--kontrol-akses)
+3. [Validasi Data](#validasi-data)
+4. [Schema Database & Model](#schema-database--model)
+5. [Business Logic & Workflow](#business-logic--workflow)
+6. [Fitur Keamanan](#fitur-keamanan)
+7. [Environment & Konfigurasi](#environment--konfigurasi)
+8. [Konstanta & Status Code](#konstanta--status-code)
+9. [Flow Diagram](#flow-diagram)
+10. [Checklist Deployment](#checklist-deployment)
+
+---
+
+# 1. SISTEM AUTENTIKASI & VERIFIKASI
+
+## 🔐 Mekanisme Login
+
+### A. Proses Login Lengkap
+
+**File yang Terlibat:**
+- `routes/web.php` - Route login
+- `app/Http/Controllers/AuthController.php` - Logic login
+- `resources/views/auth/login.blade.php` - Form login
+- `app/Models/User.php` - Model user
+
+### B. Step-by-Step Alur Login
+
+```
+1. USER BUKA HALAMAN LOGIN
+   ↓
+   Browser: GET /login
+   ↓
+   AuthController::showLogin()
+   ↓
+   View: resources/views/auth/login.blade.php
+   
+2. USER INPUT EMAIL & PASSWORD
+   ↓
+   Form: <input type="email" name="email">
+        <input type="password" name="password">
+   
+3. USER KLIK TOMBOL LOGIN
+   ↓
+   Browser: POST /login
+   ↓
+   
+4. CONTROLLER VERIFIKASI CREDENTIAL
+   ↓
+   Route (web.php):
+   Route::post('/login', [AuthController::class, 'login'])->name('login');
+   
+   Controller (AuthController.php):
+   public function login(Request $request) {
+       $request->validate([
+           'email' => 'required|email',
+           'password' => 'required'
+       ]);
+       
+       // Cari user berdasarkan email
+       $user = User::where('email', $request->email)->first();
+       
+       // Cek password menggunakan Hash::check()
+       if (!$user || !Hash::check($request->password, $user->password)) {
+           return back()->with('error', 'Email atau password salah');
+       }
+   }
+   
+5. PASSWORD VALIDATION (BCRYPT)
+   ↓
+   Penjelasan:
+   - Password user input: "password123"
+   - Password di database (hashed): "$2y$12$abcd...xyz"
+   - Fungsi Hash::check():
+     * Ambil password input: "password123"
+     * Hash lagi dengan salt yang sama: "$2y$12$..."
+     * Bandingkan dengan password di DB
+     * Jika cocok → login sukses ✅
+     * Jika tidak → login gagal ❌
+   
+6. CREATE SESSION
+   ↓
+   $request->session()->put('user_id', $user->id);
+   $request->session()->put('user_email', $user->email);
+   $request->session()->put('user_role', $user->role);
+   
+   File Session:
+   storage/framework/sessions/
+   Session ID tersimpan di cookie: LARAVEL_SESSION=xxxxx
+   
+7. REDIRECT KE DASHBOARD
+   ↓
+   if ($user->role === 'A') {
+       return redirect()->route('admin.dashboard');
+   } else {
+       return redirect()->route('dashboard');
+   }
+```
+
+### C. Implementasi di Project
+
+**File: `routes/web.php`**
+```php
+// Route login - untuk guest (belum login)
+Route::middleware('guest')->group(function () {
+    Route::get('/login', [AuthController::class, 'showLogin'])->name('auth.login.form');
+    Route::post('/login', [AuthController::class, 'login'])->name('login');
+});
+```
+
+**File: `app/Http/Controllers/AuthController.php`**
+```php
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\User;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Hash;
+
+class AuthController extends Controller
+{
+    // Tampilkan form login
+    public function showLogin()
+    {
+        return view('auth.login', ['title' => 'Login']);
+    }
+
+    // Proses login
+    public function login(Request $request)
+    {
+        // Validasi input
+        $validated = $request->validate([
+            'email' => 'required|email',
+            'password' => 'required|min:6'
+        ]);
+
+        // Cari user berdasarkan email
+        $user = User::where('email', $request->email)->first();
+
+        // Cek apakah user ada & password benar
+        if (!$user || !Hash::check($request->password, $user->password)) {
+            return back()
+                ->withInput($request->only('email'))
+                ->with('error', 'Email atau password salah');
+        }
+
+        // Simpan session
+        $request->session()->regenerate();
+        session(['user_id' => $user->id]);
+        session(['user_email' => $user->email]);
+        session(['user_role' => $user->role]);
+
+        // Redirect sesuai role
+        if ($user->role === 'A') {
+            return redirect()->route('admin.dashboard')
+                ->with('success', 'Login sebagai Admin berhasil');
+        } else {
+            return redirect()->route('dashboard')
+                ->with('success', 'Login berhasil');
+        }
+    }
+}
+```
+
+**File: `resources/views/auth/login.blade.php`**
+```blade
+@extends('layouts.app')
+
+@section('content')
+<div class="max-w-md mx-auto mt-10 bg-white p-8 rounded shadow">
+    <h2 class="text-2xl font-bold mb-6">Login</h2>
+
+    @if ($errors->any())
+        <div class="bg-red-100 text-red-700 p-3 rounded mb-4">
+            <ul>
+                @foreach ($errors->all() as $error)
+                    <li>• {{ $error }}</li>
+                @endforeach
+            </ul>
+        </div>
+    @endif
+
+    <form method="POST" action="{{ route('login') }}">
+        @csrf
+
+        <!-- Email Input -->
+        <div class="mb-4">
+            <label class="block text-gray-700 font-bold mb-2">Email</label>
+            <input type="email" name="email" value="{{ old('email') }}"
+                   class="w-full px-3 py-2 border rounded @error('email') border-red-500 @enderror"
+                   required>
+            @error('email')
+                <p class="text-red-500 text-sm mt-1">{{ $message }}</p>
+            @enderror
+        </div>
+
+        <!-- Password Input -->
+        <div class="mb-4">
+            <label class="block text-gray-700 font-bold mb-2">Password</label>
+            <input type="password" name="password"
+                   class="w-full px-3 py-2 border rounded @error('password') border-red-500 @enderror"
+                   required>
+            @error('password')
+                <p class="text-red-500 text-sm mt-1">{{ $message }}</p>
+            @enderror
+        </div>
+
+        <!-- Submit Button -->
+        <button type="submit" class="w-full bg-blue-600 text-white py-2 rounded hover:bg-blue-700">
+            Login
+        </button>
+    </form>
+
+    <p class="text-center mt-4 text-gray-600">
+        Belum punya akun? <a href="{{ route('register') }}" class="text-blue-600">Daftar di sini</a>
+    </p>
+</div>
+@endsection
+```
+
+---
+
+## 🔑 Password Hashing dengan BCrypt
+
+### A. Cara Kerja BCrypt
+
+**Apa itu BCrypt?**
+- Algoritma hashing password yang aman
+- Tidak bisa di-reverse (one-way encryption)
+- Menggunakan "salt" untuk keamanan tambahan
+- Adaptive: semakin lama waktu hashing, semakin aman
+
+**Contoh:**
+```
+Password asli:    "password123"
+Password hashed:  "$2y$12$R9h/cIPz0gi.URNNGNXOM.OPST9/PgBkqquzi.Ss7KIUgO2t0jVm2"
+
+BCrypt format: $2y$[cost]$[salt][hash]
+               $2y$ = BCrypt algorithm
+               $12  = Cost (berapa kali proses hashing)
+               $....$.... = Salt + Hash gabungan
+```
+
+### B. Implementasi di Project
+
+**Saat Register (Hashing Password):**
+
+File: `app/Http/Controllers/AuthController.php`
+```php
+public function register(Request $request)
+{
+    $validated = $request->validate([
+        'name' => 'required|string|max:255',
+        'email' => 'required|email|unique:users',
+        'password' => 'required|min:6|confirmed'
+    ]);
+
+    // HASHING PASSWORD
+    $user = User::create([
+        'name' => $validated['name'],
+        'email' => $validated['email'],
+        'password' => Hash::make($validated['password']),  // ← HASH PASSWORD
+        'role' => 'U',  // Default role: User
+        'email_verified_at' => now()
+    ]);
+
+    return redirect()->route('login')
+        ->with('success', 'Registrasi berhasil, silakan login');
+}
+```
+
+**Penjelasan:**
+- `Hash::make($password)` → mengubah password biasa menjadi hash BCrypt
+- Hasil hash tidak bisa di-reverse (satu arah)
+- Setiap kali di-hash, hasilnya berbeda (karena salt berbeda)
+
+**Saat Login (Verifikasi Password):**
+
+```php
+public function login(Request $request)
+{
+    $user = User::where('email', $request->email)->first();
+
+    // VERIFIKASI PASSWORD
+    if (!Hash::check($request->password, $user->password)) {
+        return back()->with('error', 'Password salah');
+    }
+    
+    // Password cocok → login sukses
+}
+```
+
+**Penjelasan:**
+- `Hash::check($input, $hashed)` → bandingkan password input dengan hash di DB
+- Jika cocok → return true
+- Jika tidak → return false
+
+### C. Database User Table
+
+**File: `database/migrations/xxxx_create_users_table.php`**
+```php
+Schema::create('users', function (Blueprint $table) {
+    $table->uuid('id')->primary();
+    $table->string('name');
+    $table->string('email')->unique();
+    $table->timestamp('email_verified_at')->nullable();
+    $table->string('password');  // ← Password hashed disimpan di sini
+    $table->enum('role', ['A', 'U'])->default('U');  // Admin atau User
+    $table->string('phone')->nullable();
+    $table->string('profile_photo_url')->nullable();
+    $table->timestamps();
+});
+```
+
+---
+
+## 📧 Email Verification
+
+### A. Status Email Verification
+
+**Current Status:** ⚠️ Exists but not fully implemented
+
+**Apa yang ada:**
+- Field `email_verified_at` di table users ✅
+- Seeder sudah set `email_verified_at = now()` ✅
+- Form validasi email sudah ada ✅
+
+**Apa yang belum:**
+- ❌ Email konfirmasi tidak dikirim
+- ❌ Tidak ada route verifikasi email
+- ❌ Tidak ada check di middleware
+
+### B. Cara Implementasi Email Verification (OPTIONAL)
+
+Jika ingin implementasi full:
+
+**Step 1: Buat Mail Class**
+```bash
+php artisan make:mail VerifyEmailMail
+```
+
+**Step 2: Setup di User Model**
+```php
+use Illuminate\Contracts\Auth\MustVerifyEmail;
+
+class User extends Model implements MustVerifyEmail
+{
+    // ...
+}
+```
+
+**Step 3: Buat Route Verification**
+```php
+Route::get('/email/verify/{id}/{hash}', function (Request $request) {
+    $user = User::find($request->route('id'));
+    
+    if ($user->email_verified_at !== null) {
+        return redirect()->route('dashboard');
+    }
+    
+    $user->update(['email_verified_at' => now()]);
+    
+    return redirect()->route('dashboard')
+        ->with('success', 'Email verified successfully!');
+});
+```
+
+---
+
+## 🔄 Session Management
+
+### A. Cara Kerja Session
+
+**File yang Terlibat:**
+- `config/session.php` - Konfigurasi session
+- `storage/framework/sessions/` - Tempat session disimpan
+- Cookie browser - LARAVEL_SESSION
+
+**Alur:**
+
+```
+1. USER LOGIN
+   ↓
+   Session dibuat di server: storage/framework/sessions/xyz123
+   Session berisi: user_id, user_email, user_role, csrf_token
+   ↓
+   Session ID (xyz123) dikirim ke browser via cookie: LARAVEL_SESSION=xyz123
+   
+2. USER BUKA HALAMAN LAIN
+   ↓
+   Browser kirim cookie: LARAVEL_SESSION=xyz123
+   ↓
+   Server baca session file: storage/framework/sessions/xyz123
+   ↓
+   Server ambil data: user_id, user_email, user_role
+   ↓
+   User authenticated ✅
+   
+3. USER LOGOUT
+   ↓
+   Session file dihapus: storage/framework/sessions/xyz123
+   ↓
+   Cookie dihapus di browser
+   ↓
+   User tidak authenticated ❌
+```
+
+### B. Implementasi di Project
+
+**File: `routes/web.php`**
+```php
+// Protected route - hanya untuk user yang sudah login
+Route::middleware('auth')->group(function () {
+    Route::get('/dashboard', function () {
+        // session('user_id') sudah tersedia
+        return view('dashboard');
+    })->name('dashboard');
+});
+
+// Logout
+Route::post('/logout', [AuthController::class, 'logout'])->name('logout');
+```
+
+**File: `app/Http/Controllers/AuthController.php`**
+```php
+public function logout(Request $request)
+{
+    // Hapus semua session
+    $request->session()->flush();
+    
+    // Regenerate CSRF token untuk keamanan
+    $request->session()->regenerateToken();
+    
+    return redirect()->route('home')
+        ->with('success', 'Logout berhasil');
+}
+```
+
+**File: `resources/views/layouts/navbar.blade.php`**
+```blade
+@auth
+    <!-- User sudah login -->
+    <span>Halo, {{ auth()->user()->name }}</span>
+    
+    <!-- Logout form -->
+    <form method="POST" action="{{ route('logout') }}" style="display:inline;">
+        @csrf
+        <button type="submit" onclick="return confirm('Yakin mau logout?')">
+            Logout
+        </button>
+    </form>
+@else
+    <!-- User belum login -->
+    <a href="{{ route('login') }}">Login</a>
+    <a href="{{ route('register') }}">Daftar</a>
+@endauth
+```
+
+---
+
+### C. Tempat Session Disimpan
+
+**Default:** File-based (`storage/framework/sessions/`)
+
+Konfigurasi:
+**File: `.env`**
+```
+SESSION_DRIVER=file
+SESSION_LIFETIME=120  # Session timeout 120 menit
+```
+
+Jika menggunakan database:
+```
+SESSION_DRIVER=database
+
+# Maka perlu table sessions di database:
+php artisan session:table
+php artisan migrate
+```
+
+---
+
+## 🛡️ CSRF Tokens
+
+### A. Apa itu CSRF?
+
+**CSRF = Cross-Site Request Forgery**
+
+Contoh serangan:
+```
+1. User login di website: https://boogsgunila.com
+2. User buka website jahat: https://websitejahat.com
+3. Website jahat mengirim request ke boogsgunila.com
+   (misal: DELETE booking, transfer uang, dll)
+4. Request berhasil karena session user masih aktif
+5. User kehilangan data/uang ❌
+```
+
+**Cara Cegah dengan CSRF Token:**
+```
+1. User login → server buat token unik (misal: xyz123)
+2. Token disimpan di session
+3. Setiap form POST/PUT/DELETE harus include token
+4. Website jahat tidak tahu token → request ditolak ✅
+```
+
+### B. Implementasi di Project
+
+**Di Blade Template:**
+```blade
+<form method="POST" action="{{ route('booking.store') }}">
+    @csrf  <!-- ← CSRF Token otomatis ditambahkan -->
+    
+    <input type="text" name="event_name" required>
+    <input type="date" name="date" required>
+    <button type="submit">Simpan</button>
+</form>
+```
+
+Output HTML:
+```html
+<form method="POST" action="/booking">
+    <input type="hidden" name="_token" value="abc123xyz...">
+    
+    <input type="text" name="event_name" required>
+    <input type="date" name="date" required>
+    <button type="submit">Simpan</button>
+</form>
+```
+
+**Di Controller (Validasi CSRF):**
+```php
+public function store(Request $request)
+{
+    // Middleware 'web' sudah validasi CSRF token
+    // Jika token tidak valid → 419 error
+    
+    $validated = $request->validate([
+        'event_name' => 'required|string'
+    ]);
+}
+```
+
+**File: `app/Http/Middleware/VerifyCsrfToken.php`**
+```php
+protected $except = [
+    // Route mana yang TIDAK perlu CSRF token
+    // Contoh: webhook dari pihak ketiga
+];
+```
+
+---
+
+# 2. SISTEM AUTORISASI & KONTROL AKSES
+
+## 👥 Role System (Admin vs User)
+
+### A. Definisi Role
+
+**Role ada 2 tipe:**
+
+| Role | Code | Izin |
+|------|------|------|
+| **Admin** | `'A'` | ✅ Manage semua booking, verifikasi pembayaran, manage user, manage gedung/fasilitas |
+| **User** | `'U'` | ✅ Buat booking sendiri, lihat booking sendiri, lihat pembayaran, ❌ tidak bisa lihat booking orang lain |
+
+### B. Menyimpan Role di Database
+
+**File: `database/migrations/xxxx_create_users_table.php`**
+```php
+Schema::create('users', function (Blueprint $table) {
+    // ...
+    $table->enum('role', ['A', 'U'])->default('U');
+    // ...
+});
+```
+
+**File: `database/seeders/AdminUserSeeder.php`**
+```php
+class AdminUserSeeder extends Seeder
+{
+    public function run()
+    {
+        // User 1: Admin
+        User::create([
+            'name' => 'Administrator',
+            'email' => 'admin@gsg.unila.ac.id',
+            'password' => Hash::make('password'),
+            'role' => 'A',  // ← ADMIN ROLE
+            'email_verified_at' => now()
+        ]);
+
+        // User 2: Regular User
+        User::create([
+            'name' => 'Rizky',
+            'email' => 'rizky@example.com',
+            'password' => Hash::make('password'),
+            'role' => 'U',  // ← USER ROLE
+            'email_verified_at' => now()
+        ]);
+    }
+}
+```
+
+---
+
+### C. Custom Middleware CheckRole
+
+**File: `app/Http/Middleware/CheckRole.php`**
+```php
+<?php
+
+namespace App\Http\Middleware;
+
+use Closure;
+use Illuminate\Http\Request;
+
+class CheckRole
+{
+    public function handle(Request $request, Closure $next, $role)
+    {
+        // Cek apakah user sudah login
+        if (!auth()->check()) {
+            return redirect()->route('login');
+        }
+
+        // Cek apakah user memiliki role yang diizinkan
+        if (auth()->user()->role !== $role) {
+            abort(403, 'Anda tidak memiliki akses ke halaman ini');
+        }
+
+        return $next($request);
+    }
+}
+```
+
+**Daftarkan di: `app/Http/Kernel.php`**
+```php
+protected $routeMiddleware = [
+    // ...
+    'role' => \App\Http\Middleware\CheckRole::class,
+];
+```
+
+---
+
+### D. Implementasi di Routes
+
+**File: `routes/web.php`**
+```php
+// PUBLIC ROUTES (untuk semua orang)
+Route::get('/', [HomeController::class, 'index'])->name('home');
+Route::get('/sewa/gedung', function () {
+    return view('sewa.gedung');
+})->name('public.sewa.gedung');
+
+// PROTECTED ROUTES (hanya untuk user yang login)
+Route::middleware('auth')->group(function () {
+    // User dashboard
+    Route::get('/dashboard', [UserController::class, 'dashboard'])->name('dashboard');
+    
+    // Booking routes (untuk user)
+    Route::get('/booking', [BookingController::class, 'index'])->name('booking.index');
+    Route::get('/booking/create', [BookingController::class, 'create'])->name('booking.create');
+    Route::post('/booking', [BookingController::class, 'store'])->name('booking.store');
+});
+
+// ADMIN ROUTES (hanya untuk role 'A')
+Route::prefix('admin')->name('admin.')->middleware(['auth', 'role:A'])->group(function () {
+    // Admin dashboard
+    Route::get('/', [AdminController::class, 'index'])->name('dashboard');
+    
+    // Jadwal management
+    Route::get('/schedules', [AdminController::class, 'schedulesIndex'])
+        ->name('schedules.index');
+    Route::get('/booking/create', [AdminController::class, 'bookingCreate'])
+        ->name('booking.create');
+    Route::post('/booking', [AdminController::class, 'bookingStore'])
+        ->name('booking.store');
+    
+    // Payment verification
+    Route::get('/payments', [AdminController::class, 'paymentsIndex'])
+        ->name('payments.index');
+});
+
+// GUEST ROUTES (hanya untuk yang belum login)
+Route::middleware('guest')->group(function () {
+    Route::get('/login', [AuthController::class, 'showLogin'])->name('auth.login.form');
+    Route::post('/login', [AuthController::class, 'login'])->name('login');
+    Route::get('/register', [AuthController::class, 'showRegister'])->name('auth.register.form');
+    Route::post('/register', [AuthController::class, 'register'])->name('register');
+});
+```
+
+**Penjelasan:**
+- `Route::middleware('auth')` - Hanya user yang login
+- `Route::middleware(['auth', 'role:A'])` - Hanya user login dengan role 'A'
+- `Route::middleware('guest')` - Hanya yang belum login
+
+---
+
+### E. Authorization Check di Controller
+
+**File: `app/Http/Controllers/BookingController.php`**
+```php
+class BookingController extends Controller
+{
+    public function index()
+    {
+        // Cek apakah user adalah admin
+        if (auth()->user()->role === 'A') {
+            // Admin bisa lihat semua booking
+            $bookings = Booking::all();
+        } else {
+            // User hanya bisa lihat booking miliknya sendiri
+            $bookings = Booking::where('user_id', auth()->id())->get();
+        }
+
+        return view('booking.index', compact('bookings'));
+    }
+
+    public function edit($id)
+    {
+        $booking = Booking::find($id);
+
+        // Cek: apakah booking milik user ini?
+        if (auth()->user()->role !== 'A' && $booking->user_id !== auth()->id()) {
+            abort(403, 'Anda tidak bisa edit booking orang lain');
+        }
+
+        return view('booking.edit', compact('booking'));
+    }
+
+    public function update(Request $request, $id)
+    {
+        $booking = Booking::find($id);
+
+        // Authorization check
+        if (auth()->user()->role !== 'A' && $booking->user_id !== auth()->id()) {
+            return back()->with('error', 'Unauthorized');
+        }
+
+        // Update booking
+        $booking->update($request->validated());
+
+        return redirect()->route('booking.index')
+            ->with('success', 'Booking updated');
+    }
+}
+```
+
+---
+
+### F. Authorization Check di Blade Template
+
+**File: `resources/views/booking/index.blade.php`**
+```blade
+@forelse($bookings as $booking)
+    <tr>
+        <td>{{ $booking->event_name }}</td>
+        <td>{{ $booking->date }}</td>
+        <td>
+            @if(auth()->user()->role === 'A' || auth()->id() === $booking->user_id)
+                <!-- Admin atau pemilik booking bisa edit -->
+                <a href="{{ route('booking.edit', $booking->id) }}">Edit</a>
+                <a href="{{ route('booking.delete', $booking->id) }}">Hapus</a>
+            @endif
+        </td>
+    </tr>
+@empty
+    <tr>
+        <td colspan="3">Tidak ada booking</td>
+    </tr>
+@endforelse
+```
+
+---
+
+### G. Using Auth Helper Functions
+
+**Fungsi-fungsi yang tersedia:**
+
+```php
+// Di Controller atau Blade:
+
+// 1. Cek user sudah login?
+if (auth()->check()) {
+    echo "User sudah login";
+}
+
+// 2. Ambil user yang login
+$user = auth()->user();
+echo $user->name;
+echo $user->email;
+echo $user->role;
+
+// 3. Ambil user ID
+$userId = auth()->id();
+
+// 4. Cek role
+if (auth()->user()->role === 'A') {
+    echo "Admin";
+}
+
+// 5. Cek user belum login?
+if (auth()->guest()) {
+    echo "User belum login";
+}
+
+// 6. Redirect ke login jika tidak auth
+if (!auth()->check()) {
+    return redirect()->route('login');
+}
+```
+
+---
+
+# 3. VALIDASI DATA
+
+## ✅ Validasi Booking
+
+### A. File yang Terlibat
+
+- `app/Http/Controllers/BookingController.php` - Server-side validation
+- `resources/views/create_booking.blade.php` - Client-side validation
+- `app/Rules/NoScheduleConflict.php` - Custom rule untuk cek jadwal bentrok
+
+### B. Server-Side Validation (Backend)
+
+**File: `app/Http/Controllers/BookingController.php`**
+```php
+public function store(Request $request)
+{
+    // Validasi input
+    $validated = $request->validate([
+        // Event details
+        'event_name' => 'required|string|max:255',
+        'user_id' => 'required|exists:users,id',
+
+        // Date & Time
+        'date' => 'required|date|after:today',
+        'start_time' => 'required|date_format:H:i',
+        'end_time' => 'required|date_format:H:i|after:start_time',
+
+        // Gedung & Kapasitas
+        'gedung_id' => 'required|exists:gedung,id',
+        'capacity' => 'required|integer|min:1',
+
+        // Contact
+        'phone' => 'required|regex:/^([0-9]|\+62)[0-9]{9,13}$/',
+        'email' => 'required|email',
+
+        // Fasilitas (optional)
+        'fasilitas.*.id' => 'required_with:fasilitas.*.jumlah|exists:fasilitas,id',
+        'fasilitas.*.jumlah' => 'required_with:fasilitas.*.id|integer|min:1',
+
+        // File
+        'proposal_file' => 'nullable|file|mimes:pdf,doc,docx|max:5120',
+    ]);
+
+    // Cek jadwal bentrok
+    $conflictExists = Booking::where('gedung_id', $validated['gedung_id'])
+        ->where('date', $validated['date'])
+        ->where('status', '2')  // Hanya cek booking yang approved
+        ->where(function ($query) use ($validated) {
+            // Cek waktu bentrok
+            $query->whereBetween('start_time', [$validated['start_time'], $validated['end_time']])
+                  ->orWhereBetween('end_time', [$validated['start_time'], $validated['end_time']]);
+        })
+        ->exists();
+
+    if ($conflictExists) {
+        return back()->with('error', 'Jadwal sudah digunakan pada waktu tersebut');
+    }
+
+    // Cek kapasitas tidak melebihi kapasitas gedung
+    $gedung = Gedung::find($validated['gedung_id']);
+    if ($validated['capacity'] > $gedung->kapasitas) {
+        return back()->with('error', 'Kapasitas melebihi kapasitas gedung');
+    }
+
+    // Create booking
+    $booking = Booking::create($validated);
+
+    return redirect()->route('booking.index')
+        ->with('success', 'Booking berhasil dibuat');
+}
+```
+
+**Penjelasan Validasi Rules:**
+
+| Rule | Arti |
+|------|------|
+| `required` | Field wajib diisi |
+| `string` | Harus string/text |
+| `max:255` | Maksimal 255 karakter |
+| `date` | Format tanggal valid (YYYY-MM-DD) |
+| `after:today` | Tanggal harus lebih dari hari ini |
+| `date_format:H:i` | Format jam HH:MM |
+| `after:start_time` | Jam selesai > jam mulai |
+| `exists:users,id` | User ID harus ada di table users |
+| `regex:/pattern/` | Cocok dengan regex pattern |
+| `file` | Harus file |
+| `mimes:pdf,doc` | File type harus PDF atau DOC |
+| `max:5120` | File size max 5MB (5120 KB) |
+| `required_with:field` | Wajib jika field lain ada |
+
+---
+
+### C. Client-Side Validation (Frontend)
+
+**File: `resources/views/create_booking.blade.php`**
+```blade
+<form id="bookingForm" method="POST" action="{{ route('booking.store') }}"
+      onsubmit="return validateForm()">
+    @csrf
+
+    <!-- Event Name -->
+    <div class="form-group">
+        <label>Nama Event</label>
+        <input type="text" name="event_name" id="eventName"
+               value="{{ old('event_name') }}"
+               maxlength="255" required>
+        @error('event_name')
+            <span class="error">{{ $message }}</span>
+        @enderror
+    </div>
+
+    <!-- Date -->
+    <div class="form-group">
+        <label>Tanggal</label>
+        <input type="date" name="date" id="date"
+               value="{{ old('date') }}"
+               min="{{ date('Y-m-d', strtotime('+1 day')) }}"
+               required>
+        <small id="dateError" class="error" style="display:none;"></small>
+        @error('date')
+            <span class="error">{{ $message }}</span>
+        @enderror
+    </div>
+
+    <!-- Start Time -->
+    <div class="form-group">
+        <label>Jam Mulai</label>
+        <input type="time" name="start_time" id="startTime"
+               value="{{ old('start_time') }}"
+               required>
+        @error('start_time')
+            <span class="error">{{ $message }}</span>
+        @enderror
+    </div>
+
+    <!-- End Time -->
+    <div class="form-group">
+        <label>Jam Selesai</label>
+        <input type="time" name="end_time" id="endTime"
+               value="{{ old('end_time') }}"
+               required>
+        <small id="timeError" class="error" style="display:none;"></small>
+        @error('end_time')
+            <span class="error">{{ $message }}</span>
+        @enderror
+    </div>
+
+    <!-- Gedung -->
+    <div class="form-group">
+        <label>Gedung</label>
+        <select name="gedung_id" id="gedungId" required>
+            <option value="">Pilih Gedung</option>
+            @foreach($gedungs as $g)
+                <option value="{{ $g->id }}" {{ old('gedung_id') == $g->id ? 'selected' : '' }}>
+                    {{ $g->nama }} (Rp {{ number_format($g->harga) }})
+                </option>
+            @endforeach
+        </select>
+        @error('gedung_id')
+            <span class="error">{{ $message }}</span>
+        @enderror
+    </div>
+
+    <!-- Capacity -->
+    <div class="form-group">
+        <label>Kapasitas Peserta</label>
+        <input type="number" name="capacity" id="capacity"
+               value="{{ old('capacity') }}"
+               min="1" required>
+        <small id="capacityError" class="error" style="display:none;"></small>
+        @error('capacity')
+            <span class="error">{{ $message }}</span>
+        @enderror
+    </div>
+
+    <!-- Phone -->
+    <div class="form-group">
+        <label>Telepon</label>
+        <input type="text" name="phone" id="phone"
+               value="{{ old('phone') }}"
+               placeholder="08xxxxxxxxx atau +62xxxxxxxxx"
+               required>
+        <small id="phoneError" class="error" style="display:none;"></small>
+        @error('phone')
+            <span class="error">{{ $message }}</span>
+        @enderror
+    </div>
+
+    <!-- Fasilitas -->
+    <div class="form-group">
+        <label>Fasilitas Tambahan</label>
+        @foreach($fasilitas as $f)
+            <div class="facility-item">
+                <label>
+                    <input type="checkbox" name="fasilitas[{{ $loop->index }}][id]"
+                           value="{{ $f->id }}"
+                           data-harga="{{ $f->harga }}"
+                           onchange="recalcTotal()">
+                    {{ $f->nama }} - Rp {{ number_format($f->harga) }}
+                </label>
+                <input type="number" name="fasilitas[{{ $loop->index }}][jumlah]"
+                       value="1" min="1"
+                       onchange="recalcTotal()"
+                       style="display:none; width:60px;">
+            </div>
+        @endforeach
+    </div>
+
+    <!-- Biaya Summary -->
+    <div class="cost-summary">
+        <h3>Ringkasan Biaya</h3>
+        <p>Gedung: <span id="gedungPrice">Rp 0</span></p>
+        <p>Fasilitas: <span id="fasilitasPrice">Rp 0</span></p>
+        <p class="total">Total: <span id="totalPrice">Rp 0</span></p>
+    </div>
+
+    <button type="submit" class="btn-primary">Pesan Sekarang</button>
+</form>
+
+<script>
+function validateForm() {
+    let isValid = true;
+
+    // Validasi jam
+    const startTime = document.getElementById('startTime').value;
+    const endTime = document.getElementById('endTime').value;
+    
+    if (startTime >= endTime) {
+        document.getElementById('timeError').textContent = 'Jam selesai harus lebih besar dari jam mulai';
+        document.getElementById('timeError').style.display = 'block';
+        isValid = false;
+    }
+
+    // Validasi phone
+    const phone = document.getElementById('phone').value;
+    const phoneRegex = /^([0-9]|\+62)[0-9]{9,13}$/;
+    
+    if (!phoneRegex.test(phone)) {
+        document.getElementById('phoneError').textContent = 'Format telepon tidak valid';
+        document.getElementById('phoneError').style.display = 'block';
+        isValid = false;
+    }
+
+    // Validasi kapasitas
+    const gedungId = document.getElementById('gedungId').value;
+    const capacity = parseInt(document.getElementById('capacity').value);
+    
+    // Cek ke server jika kapasitas valid
+    // (ini lebih baik di-handle di server saja)
+
+    return isValid;
+}
+
+function recalcTotal() {
+    // Hitung total biaya (sudah dijelaskan sebelumnya)
+}
+</script>
+```
+
+---
+
+### D. Custom Validation Rule
+
+**File: `app/Rules/NoScheduleConflict.php`**
+```php
+<?php
+
+namespace App\Rules;
+
+use Illuminate\Contracts\Validation\Rule;
+use App\Models\Booking;
+
+class NoScheduleConflict implements Rule
+{
+    protected $gedungId;
+    protected $date;
+    protected $startTime;
+    protected $endTime;
+
+    public function __construct($gedungId, $date, $startTime, $endTime)
+    {
+        $this->gedungId = $gedungId;
+        $this->date = $date;
+        $this->startTime = $startTime;
+        $this->endTime = $endTime;
+    }
+
+    public function passes($attribute, $value)
+    {
+        $conflict = Booking::where('gedung_id', $this->gedungId)
+            ->where('date', $this->date)
+            ->where('status', '2')  // Hanya approved bookings
+            ->where(function ($query) {
+                $query->whereBetween('start_time', [$this->startTime, $this->endTime])
+                      ->orWhereBetween('end_time', [$this->startTime, $this->endTime]);
+            })
+            ->exists();
+
+        return !$conflict;
+    }
+
+    public function message()
+    {
+        return 'Jadwal sudah digunakan pada waktu tersebut untuk gedung ini';
+    }
+}
+```
+
+**Penggunaan di Controller:**
+```php
+$validated = $request->validate([
+    'date' => 'required|date',
+    'start_time' => [
+        'required',
+        new NoScheduleConflict(
+            $request->gedung_id,
+            $request->date,
+            $request->start_time,
+            $request->end_time
+        )
+    ]
+]);
+```
+
+---
+
+## ✅ Validasi Payment
+
+**File: `app/Http/Controllers/PaymentController.php`**
+```php
+public function uploadProof(Request $request, $id)
+{
+    $payment = Payment::find($id);
+
+    // Validasi
+    $validated = $request->validate([
+        'method' => 'required|in:cash,transfer,ewallet',
+        'amount' => 'required|numeric|min:100000',
+        'proof_file' => 'required_if:method,transfer,ewallet|file|mimes:jpg,png,pdf|max:5120',
+    ]);
+
+    // Jika method transfer/ewallet, wajib upload file
+    if (in_array($validated['method'], ['transfer', 'ewallet'])) {
+        if (!$request->hasFile('proof_file')) {
+            return back()->with('error', 'Bukti pembayaran wajib untuk metode ini');
+        }
+
+        $file = $request->file('proof_file');
+        $filename = time() . '_' . $file->getClientOriginalName();
+        $path = $file->storeAs('payments', $filename, 'public');
+
+        $payment->update([
+            'proof_file' => $path,
+            'method' => $validated['method'],
+            'status' => 1  // Proses (menunggu verifikasi)
+        ]);
+    } else {
+        // Cash payment
+        $payment->update([
+            'method' => 'cash',
+            'status' => 1  // Proses
+        ]);
+    }
+
+    return redirect()->route('payments.index')
+        ->with('success', 'Bukti pembayaran berhasil diupload');
+}
+```
+
+---
+
+# 4. SCHEMA DATABASE & MODEL
+
+## 📊 Database Architecture
+
+### A. Entity Relationship Diagram (ERD)
+
+```
+┌─────────────┐         ┌──────────────┐         ┌─────────────┐
+│    USERS    │         │   BOOKINGS   │         │   GEDUNG    │
+├─────────────┤         ├──────────────┤         ├─────────────┤
+│ id (PK)     │◄─┐   ┌──│ id (PK)      │──┐      │ id (PK)     │
+│ name        │  └───┤  │ user_id (FK) │  └─────│ nama        │
+│ email       │      │  │ gedung_id(FK)│        │ lokasi      │
+│ password    │      │  │ date         │        │ kapasitas   │
+│ role (A/U)  │      │  │ start_time   │        │ harga       │
+│ phone       │      │  │ end_time     │        │             │
+└─────────────┘      │  │ status (1-4) │        └─────────────┘
+                     │  │ event_name   │
+                     │  │ capacity     │
+                     │  │ phone        │
+                     │  │ email        │
+                     │  │ proposal_file│
+                     │  └──────────────┘
+                     │         │
+                     │         │ 1:N
+                     │         │
+                     │  ┌──────────────────────┐
+                     │  │ BOOKING_FASILITAS    │
+                     │  ├──────────────────────┤
+                     │  │ id (PK)              │
+                     │  │ booking_id (FK)      │
+                     │  │ fasilitas_id (FK)    │
+                     │  │ jumlah               │
+                     │  └──────────────────────┘
+                     │             │
+                     │             │ N:1
+                     │             │
+                     │  ┌──────────────────────┐
+                     │  │    FASILITAS         │
+                     │  ├──────────────────────┤
+                     │  │ id (PK)              │
+                     │  │ nama                 │
+                     │  │ harga                │
+                     │  │ deskripsi            │
+                     │  │ stock                │
+                     │  └──────────────────────┘
+                     │
+                     │  ┌──────────────────────┐
+                     └──│    PAYMENTS          │
+                        ├──────────────────────┤
+                        │ id (PK)              │
+                        │ booking_id (FK)      │
+                        │ amount               │
+                        │ status (0-3)         │
+                        │ method               │
+                        │ proof_file           │
+                        │ created_at           │
+                        └──────────────────────┘
+```
+
+### B. Table Details
+
+#### **Table: users**
+```sql
+CREATE TABLE users (
+    id UUID PRIMARY KEY,
+    name VARCHAR(255) NOT NULL,
+    email VARCHAR(255) UNIQUE NOT NULL,
+    email_verified_at TIMESTAMP NULL,
+    password VARCHAR(255) NOT NULL,
+    role ENUM('A', 'U') DEFAULT 'U',  -- Admin atau User
+    phone VARCHAR(20) NULL,
+    profile_photo_url VARCHAR(255) NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+
+-- Indexes
+CREATE INDEX idx_users_email ON users(email);
+CREATE INDEX idx_users_role ON users(role);
+```
+
+**Penjelasan Kolom:**
+- `id` - UUID unik
+- `role` - 'A' = Admin, 'U' = User
+- `email_verified_at` - NULL jika belum verifikasi, waktu jika sudah
+- `password` - Password hashed dengan BCrypt
+
+---
+
+#### **Table: bookings**
+```sql
+CREATE TABLE bookings (
+    id UUID PRIMARY KEY,
+    user_id UUID NOT NULL REFERENCES users(id),
+    gedung_id UUID NOT NULL REFERENCES gedung(id),
+    date DATE NOT NULL,
+    start_time TIME NOT NULL,
+    end_time TIME NOT NULL,
+    status CHAR(1) DEFAULT '1',  -- 1=Menunggu, 2=Disetujui, 3=Ditolak, 4=Selesai
+    event_name VARCHAR(255) NOT NULL,
+    capacity INT NOT NULL,  -- Jumlah peserta
+    phone VARCHAR(20) NOT NULL,
+    email VARCHAR(255) NOT NULL,
+    proposal_file VARCHAR(255) NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+
+-- Indexes
+CREATE INDEX idx_bookings_user_id ON bookings(user_id);
+CREATE INDEX idx_bookings_gedung_id ON bookings(gedung_id);
+CREATE INDEX idx_bookings_date ON bookings(date);
+CREATE INDEX idx_bookings_status ON bookings(status);
+```
+
+**Penjelasan Kolom:**
+- `date` - Tanggal booking (YYYY-MM-DD)
+- `start_time` - Jam mulai (HH:MM:SS)
+- `end_time` - Jam selesai (HH:MM:SS)
+- `status` - Kondisi booking (1/2/3/4)
+- `capacity` - Jumlah peserta yang akan hadir
+
+---
+
+#### **Table: gedung**
+```sql
+CREATE TABLE gedung (
+    id UUID PRIMARY KEY,
+    nama VARCHAR(255) NOT NULL,
+    lokasi VARCHAR(255) NULL,
+    kapasitas INT NOT NULL,
+    harga DECIMAL(12, 2) NOT NULL,  -- Harga per hari/jam
+    deskripsi TEXT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+
+-- Indexes
+CREATE INDEX idx_gedung_nama ON gedung(nama);
+```
+
+---
+
+#### **Table: fasilitas**
+```sql
+CREATE TABLE fasilitas (
+    id UUID PRIMARY KEY,
+    nama VARCHAR(255) NOT NULL,
+    harga DECIMAL(12, 2) NOT NULL,  -- Harga per item
+    deskripsi TEXT NULL,
+    stock INT DEFAULT 1,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+
+-- Indexes
+CREATE INDEX idx_fasilitas_nama ON fasilitas(nama);
+```
+
+---
+
+#### **Table: booking_fasilitas (Pivot Table)**
+```sql
+CREATE TABLE booking_fasilitas (
+    id UUID PRIMARY KEY,
+    booking_id UUID NOT NULL REFERENCES bookings(id) ON DELETE CASCADE,
+    fasilitas_id UUID NOT NULL REFERENCES fasilitas(id),
+    jumlah INT NOT NULL DEFAULT 1,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Indexes
+CREATE INDEX idx_booking_fasilitas_booking ON booking_fasilitas(booking_id);
+CREATE INDEX idx_booking_fasilitas_fasilitas ON booking_fasilitas(fasilitas_id);
+```
+
+**Penjelasan:**
+- Pivot table menghubungkan booking dengan fasilitas
+- Satu booking bisa punya banyak fasilitas
+- Satu fasilitas bisa dipakai di banyak booking
+- Kolom `jumlah` untuk qty fasilitas yang dipakai
+
+---
+
+#### **Table: payments**
+```sql
+CREATE TABLE payments (
+    id UUID PRIMARY KEY,
+    booking_id UUID NOT NULL REFERENCES bookings(id) ON DELETE CASCADE,
+    amount DECIMAL(12, 2) NOT NULL,
+    status INT DEFAULT 0,  -- 0=Belum, 1=Proses, 2=Verified, 3=Rejected
+    method VARCHAR(50) NULL,  -- cash, transfer, ewallet
+    proof_file VARCHAR(255) NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+
+-- Indexes
+CREATE INDEX idx_payments_booking ON payments(booking_id);
+CREATE INDEX idx_payments_status ON payments(status);
+```
+
+---
+
+### C. Models dengan Relations
+
+**File: `app/Models/User.php`**
+```php
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Foundation\Auth\User as Authenticatable;
+
+class User extends Authenticatable
+{
+    protected $keyType = 'string';
+    public $incrementing = false;
+
+    protected $fillable = [
+        'id', 'name', 'email', 'password', 'role', 'phone', 'profile_photo_url'
+    ];
+
+    // Relasi: satu user bisa punya banyak bookings
+    public function bookings()
+    {
+        return $this->hasMany(Booking::class);
+    }
+}
+```
+
+**File: `app/Models/Booking.php`**
+```php
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Booking extends Model
+{
+    protected $keyType = 'string';
+    public $incrementing = false;
+
+    protected $fillable = [
+        'id', 'user_id', 'gedung_id', 'date', 'start_time', 'end_time',
+        'status', 'event_name', 'capacity', 'phone', 'email', 'proposal_file'
+    ];
+
+    // Relasi: booking milik satu user
+    public function user()
+    {
+        return $this->belongsTo(User::class);
+    }
+
+    // Relasi: booking untuk satu gedung
+    public function gedung()
+    {
+        return $this->belongsTo(Gedung::class);
+    }
+
+    // Relasi: booking punya banyak fasilitas
+    public function bookingFasilitas()
+    {
+        return $this->hasMany(BookingFasilitas::class);
+    }
+
+    // Relasi: booking punya satu payment
+    public function payment()
+    {
+        return $this->hasOne(Payment::class);
+    }
+}
+```
+
+**File: `app/Models/Gedung.php`**
+```php
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Gedung extends Model
+{
+    protected $table = 'gedung';
+    protected $keyType = 'string';
+    public $incrementing = false;
+
+    protected $fillable = [
+        'id', 'nama', 'lokasi', 'kapasitas', 'harga', 'deskripsi'
+    ];
+
+    // Relasi: gedung punya banyak bookings
+    public function bookings()
+    {
+        return $this->hasMany(Booking::class);
+    }
+}
+```
+
+**File: `app/Models/Fasilitas.php`**
+```php
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Fasilitas extends Model
+{
+    protected $keyType = 'string';
+    public $incrementing = false;
+
+    protected $fillable = [
+        'id', 'nama', 'harga', 'deskripsi', 'stock'
+    ];
+
+    // Relasi: fasilitas punya banyak booking_fasilitas
+    public function bookingFasilitas()
+    {
+        return $this->hasMany(BookingFasilitas::class);
+    }
+}
+```
+
+**File: `app/Models/BookingFasilitas.php`**
+```php
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class BookingFasilitas extends Model
+{
+    protected $table = 'booking_fasilitas';
+    protected $keyType = 'string';
+    public $incrementing = false;
+
+    protected $fillable = [
+        'id', 'booking_id', 'fasilitas_id', 'jumlah'
+    ];
+
+    // Relasi: booking_fasilitas milik satu booking
+    public function booking()
+    {
+        return $this->belongsTo(Booking::class);
+    }
+
+    // Relasi: booking_fasilitas mereferensi satu fasilitas
+    public function fasilitas()
+    {
+        return $this->belongsTo(Fasilitas::class);
+    }
+}
+```
+
+**File: `app/Models/Payment.php`**
+```php
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Payment extends Model
+{
+    protected $keyType = 'string';
+    public $incrementing = false;
+
+    protected $fillable = [
+        'id', 'booking_id', 'amount', 'status', 'method', 'proof_file'
+    ];
+
+    // Relasi: payment untuk satu booking
+    public function booking()
+    {
+        return $this->belongsTo(Booking::class);
+    }
+}
+```
+
+---
+
+# 5. BUSINESS LOGIC & WORKFLOW
+
+## 📋 Alur Booking Lengkap
+
+### Step 1: User Buat Booking
+
+```
+User buka halaman: GET /booking/create
+    ↓
+View: resources/views/create_booking.blade.php
+    ↓
+User isi form:
+  - Event name
+  - Tanggal (harus besok atau lebih)
+  - Jam mulai & selesai
+  - Gedung
+  - Kapasitas peserta
+  - Fasilitas tambahan (optional)
+  - Kontak & email
+  ↓
+User klik tombol "Pesan Sekarang"
+    ↓
+Browser: POST /booking
+    ↓
+Middleware 'auth' cek user sudah login
+    ↓
+Jika tidak → redirect ke login
+Jika ya → lanjut ke controller
+```
+
+### Step 2: Server Validasi Input
+
+```
+BookingController::store() dijalankan
+    ↓
+Validasi input di controller:
+  ✓ event_name - harus diisi
+  ✓ date - harus lebih dari hari ini
+  ✓ start_time & end_time - format HH:MM, end > start
+  ✓ gedung_id - harus ada di table gedung
+  ✓ capacity - harus integer, tidak melebihi kapasitas gedung
+  ✓ phone - format valid (0xxx atau +62xxx)
+  ✓ fasilitas - jika ada, jumlah > 0
+  ✓ proposal_file - optional, tapi jika ada: PDF/DOC, max 5MB
+    ↓
+Validasi jadwal bentrok:
+  Cek: Pada tanggal & waktu tersebut, gedung sudah diboking & disetujui?
+  SELECT FROM bookings WHERE
+    gedung_id = X AND
+    date = Y AND
+    status = 2 (approved) AND
+    (
+      (start_time <= X AND end_time >= X) OR
+      (start_time <= Y AND end_time >= Y)
+    )
+    ↓
+Jika ada bentrok → return error: "Jadwal sudah digunakan"
+Jika tidak → lanjut
+    ↓
+Jika ada error validasi:
+  return back()->withErrors($errors)
+  ↓
+  View form ditampilkan kembali dengan error messages
+  User bisa lihat error di setiap field
+```
+
+### Step 3: Simpan Booking ke Database
+
+```
+Jika semua validasi pass → create booking:
+    ↓
+$booking = Booking::create([
+    'user_id' => auth()->id(),
+    'gedung_id' => $request->gedung_id,
+    'date' => $request->date,
+    'start_time' => $request->start_time,
+    'end_time' => $request->end_time,
+    'status' => '1',  // ← Default: Menunggu (pending)
+    'event_name' => $request->event_name,
+    'capacity' => $request->capacity,
+    'phone' => $request->phone,
+    'email' => $request->email,
+    'proposal_file' => $proposalPath ?? null
+]);
+    ↓
+Simpan fasilitas yang dipilih:
+    ↓
+foreach ($request->fasilitas as $fac) {
+    BookingFasilitas::create([
+        'booking_id' => $booking->id,
+        'fasilitas_id' => $fac['id'],
+        'jumlah' => $fac['jumlah']
+    ]);
+}
+    ↓
+Buat record payment otomatis:
+    ↓
+$payment = Payment::create([
+    'booking_id' => $booking->id,
+    'amount' => $totalAmount,  // Dihitung dari gedung + fasilitas
+    'status' => 0,  // Belum dibayar
+    'method' => null,
+    'proof_file' => null
+]);
+    ↓
+Redirect ke payment upload form:
+    ↓
+return redirect()->route('payments.upload.form', $payment->id)
+    ->with('success', 'Booking berhasil dibuat. Silakan upload bukti pembayaran.');
+```
+
+### Step 4: User Upload Bukti Pembayaran
+
+```
+User lihat form upload:
+    ↓
+GET /payments/{id}/upload
+    ↓
+View: resources/views/payments/upload.blade.php
+    ↓
+Form menampilkan:
+  - Pilihan metode pembayaran (3 opsi):
+    1. Bayar di Tempat (cash) - tidak perlu upload
+    2. Transfer Bank - wajib upload bukti
+    3. E-Wallet - wajib upload bukti
+  - File upload dengan drag-drop
+  - Total pembayaran
+  - Informasi penting
+    ↓
+User pilih metode & upload file (jika diperlukan)
+    ↓
+Browser: POST /payments/{id}/upload-proof
+    ↓
+Server validasi file:
+  ✓ Jika method = transfer/ewallet:
+      - File wajib ada
+      - File type: JPG, PNG, PDF
+      - File size: max 5MB
+  ✓ Jika method = cash:
+      - File optional
+    ↓
+File disimpan di: storage/app/public/payments/
+    ↓
+Update payment record:
+    ↓
+$payment->update([
+    'method' => $request->method,
+    'status' => 1,  // ← Status jadi "Proses" (menunggu verifikasi)
+    'proof_file' => $path,
+    'updated_at' => now()
+]);
+    ↓
+Redirect ke payment list:
+    ↓
+return redirect()->route('payments.index')
+    ->with('success', 'Bukti pembayaran berhasil diupload. Menunggu verifikasi admin');
+```
+
+### Step 5: Admin Verifikasi Pembayaran
+
+```
+Admin buka halaman: GET /admin/payments
+    ↓
+View: resources/views/admin/payments.blade.php
+    ↓
+Admin lihat list pembayaran dengan status:
+  - Belum Dibayar (0)
+  - Proses (1) ← User sudah upload, menunggu verifikasi
+  - Terverifikasi (2)
+  - Ditolak (3)
+    ↓
+Admin klik tombol "Verifikasi Pembayaran" untuk payment status 1
+    ↓
+Browser: POST /admin/payments/{id}/verify
+    ↓
+AdminController::verifyPayment() dijalankan:
+    ↓
+$payment = Payment::find($id);
+
+// Cek apakah payment sudah verified sebelumnya
+if ($payment->status !== 1) {
+    return back()->with('error', 'Payment sudah diverifikasi sebelumnya');
+}
+
+// Update payment status
+$payment->update([
+    'status' => 2,  // ← Status jadi "Terverifikasi"
+    'verified_at' => now()
+]);
+
+// Auto-approve booking jika payment verified
+$payment->booking->update([
+    'status' => 2  // ← Booking jadi "Disetujui"
+]);
+    ↓
+Redirect dengan success message:
+    ↓
+return redirect()->route('admin.payments.index')
+    ->with('success', 'Pembayaran berhasil diverifikasi. Booking disetujui.');
+    ↓
+User lihat status berubah:
+  - Payment: Terverifikasi ✅
+  - Booking: Disetujui ✅
+```
+
+### Step 6: Admin Kelola Booking
+
+```
+Admin buka jadwal:
